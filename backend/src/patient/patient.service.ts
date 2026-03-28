@@ -98,26 +98,14 @@ export class PatientService {
           Boolean(entry),
         );
 
-      const transformedData = this.transformToFullPatientData(
-        normalizedPatientId,
-        parsedPatientRecord,
-        parsedQueueRecords,
-      );
-
-      if (!this.isFullPatientData(transformedData)) {
-        await archiveWriter.writeJsonRecord(
-          `incefficient_record_${normalizedPatientId}`,
-          {
-            patient_id: normalizedPatientId,
-            checked_at: new Date().toISOString(),
-            patient_record_key: patientRecordKey,
-            queue_key: this.getPatientQueueKey(normalizedPatientId),
-            raw_patient_record: rawPatientRecord,
-            raw_queue_records: rawQueueRecords,
-            transformed_data: transformedData,
-          },
+      let transformedData: FullPatientDataI;
+      try {
+        transformedData = this.transformToFullPatientData(
+          normalizedPatientId,
+          parsedPatientRecord,
+          parsedQueueRecords,
         );
-
+      } catch (error: unknown) {
         const phoneLookupKey =
           this.getPhoneLookupKeyFromRecord(parsedPatientRecord);
 
@@ -135,7 +123,15 @@ export class PatientService {
         );
       }
 
-      return transformedData;
+      return {
+        id: transformedData.id,
+        name: transformedData.name,
+        phone_number: transformedData.phone_number,
+        triage_state: transformedData.triage_state,
+        admitted_at: new Date(transformedData.admitted_at),
+        history: transformedData.history,
+        queue: transformedData.queue,
+      };
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw error;
@@ -257,8 +253,6 @@ export class PatientService {
           admitted_at: record.admitted_at.toISOString(),
         }),
       );
-
-      await client.zAdd(this.getPatientQueueKey(record.id), []);
     } catch {
       await client.del(phoneLookupKey);
       throw new ServiceUnavailableException(
@@ -378,70 +372,60 @@ export class PatientService {
     patientId: string,
     rawRecord: unknown,
     queue: FullPatientDataI['queue'],
-  ): unknown {
+  ): FullPatientDataI {
     if (!this.isObject(rawRecord)) {
-      return {
-        id: patientId,
-        queue,
-      };
+      throw new Error('Invalid patient record format');
     }
-
-    const admittedAt =
-      typeof rawRecord.admitted_at === 'string'
-        ? new Date(rawRecord.admitted_at)
-        : rawRecord.admitted_at;
 
     const history = rawRecord.history;
     if (Array.isArray(history)) {
-      history
-        .map((entry) => {
-          if (!this.isObject(entry)) {
-            return null;
-          }
+      history.map((entry) => {
+        if (!this.isObject(entry)) {
+          throw new Error('Invalid history record format');
+        }
 
-          const timestamp =
-            typeof entry.timestamp === 'string'
-              ? new Date(entry.timestamp)
-              : entry.timestamp;
+        const timestamp =
+          typeof entry.timestamp === 'string'
+            ? new Date(entry.timestamp)
+            : entry.timestamp;
 
-          if (
-            typeof entry.reffered_by_id !== 'string' ||
-            typeof entry.specialty !== 'string' ||
-            typeof entry.triage_state !== 'string' ||
-            !TRIAGE_STATES.includes(
-              entry.triage_state as (typeof TRIAGE_STATES)[number],
-            ) ||
-            typeof entry.reffered_to_id !== 'string' ||
-            typeof entry.is_done !== 'boolean' ||
-            !(timestamp instanceof Date) ||
-            Number.isNaN(timestamp.getTime())
-          ) {
-            return null;
-          }
+        if (
+          typeof entry.reffered_by_id !== 'string' ||
+          typeof entry.specialty !== 'string' ||
+          typeof entry.triage_state !== 'string' ||
+          !TRIAGE_STATES.includes(
+            entry.triage_state as (typeof TRIAGE_STATES)[number],
+          ) ||
+          typeof entry.reffered_to_id !== 'string' ||
+          typeof entry.is_done !== 'boolean' ||
+          !(timestamp instanceof Date) ||
+          Number.isNaN(timestamp.getTime())
+        ) {
+          throw new Error('Invalid history record format');
+        }
 
-          return {
-            reffered_by_id: entry.reffered_by_id,
-            specialty: entry.specialty,
-            triage_state: entry.triage_state,
-            reffered_to_id: entry.reffered_to_id,
-            is_done: entry.is_done,
-            timestamp,
-          };
-        })
-        .filter((entry): entry is FullPatientDataI['history'][number] =>
-          Boolean(entry),
-        );
+        return entry;
+      });
     }
 
-    return {
-      id: rawRecord.id,
-      name: rawRecord.name,
-      phone_number: rawRecord.phone_number,
-      triage_state: rawRecord.triage_state,
-      admitted_at: admittedAt,
+    if (Array.isArray(queue)) {
+      queue = [];
+    }
+
+    const transformed = {
+      ...rawRecord,
       history,
       queue,
-    };
+    } as FullPatientDataI;
+
+    if (!this.isFullPatientData(transformed)) {
+      console.log('throws the check');
+      throw new Error(
+        'Transformed data does not match FullPatientDataI format',
+      );
+    }
+
+    return transformed;
   }
 
   private isFullPatientData(value: unknown): value is FullPatientDataI {
@@ -459,8 +443,7 @@ export class PatientService {
       !TRIAGE_STATES.includes(
         value.triage_state as (typeof TRIAGE_STATES)[number],
       ) ||
-      !(value.admitted_at instanceof Date) ||
-      Number.isNaN(value.admitted_at.getTime()) ||
+      typeof value.admitted_at !== 'string' ||
       !Array.isArray(value.history) ||
       !Array.isArray(value.queue)
     ) {
@@ -486,9 +469,11 @@ export class PatientService {
       );
     });
 
-    if (!hasValidHistory) {
+    if (!hasValidHistory && value.history.length > 0) {
       return false;
     }
+
+    if (!Array.isArray(value.queue) || value.queue.length === 0) return true;
 
     return value.queue.every((entry) => {
       if (!this.isObject(entry)) {

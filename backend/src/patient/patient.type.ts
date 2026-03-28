@@ -5,7 +5,7 @@ export interface FullPatientDataI {
   name: string;
   phone_number: string;
   triage_state: TriageState;
-  admitted_at: Date;
+  admitted_at: string;
   history: HistoryRecordI[];
   queue: QueueRecordI[];
 }
