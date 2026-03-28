@@ -15,6 +15,7 @@ import {
   CheckInPayloadI,
   CheckInResponseI,
   PatientDetailsResponseI,
+  UpdatePatientI,
 } from './patient.dto';
 import { FullPatientDataI } from './patient.type';
 
@@ -24,6 +25,157 @@ const archiveWriter = createJsonArchiver({
 
 @Injectable()
 export class PatientService {
+  async updatePatient(
+    patientId: string,
+    payload: UpdatePatientI,
+  ): Promise<CheckInResponseI> {
+    const client = this.redisService.client;
+    const normalizedPatientId = patientId.trim();
+    const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+
+    const rawPatientRecord = await client.get(patientRecordKey);
+
+    if (!rawPatientRecord) {
+      throw new NotFoundException(
+        `Patient with id ${normalizedPatientId} is not checked in`,
+      );
+    }
+
+    let parsedPatientRecord: unknown;
+    try {
+      parsedPatientRecord = JSON.parse(rawPatientRecord) as unknown;
+    } catch {
+      throw new NotFoundException(
+        `Patient with id ${normalizedPatientId} has invalid data`,
+      );
+    }
+
+    if (!this.isObject(parsedPatientRecord)) {
+      throw new NotFoundException(
+        `Patient with id ${normalizedPatientId} has invalid data`,
+      );
+    }
+
+    const currentName = parsedPatientRecord.name;
+    const currentPhone = parsedPatientRecord.phone_number;
+    const currentTriageState = parsedPatientRecord.triage_state;
+    const currentAdmittedAt = parsedPatientRecord.admitted_at;
+    const currentNotes = parsedPatientRecord.notes;
+
+    if (
+      typeof currentName !== 'string' ||
+      typeof currentPhone !== 'string' ||
+      typeof currentTriageState !== 'string' ||
+      !TRIAGE_STATES.includes(
+        currentTriageState as (typeof TRIAGE_STATES)[number],
+      ) ||
+      typeof currentAdmittedAt !== 'string' ||
+      !Array.isArray(currentNotes) ||
+      !currentNotes.every((note) => typeof note === 'string')
+    ) {
+      throw new NotFoundException(
+        `Patient with id ${normalizedPatientId} has invalid data`,
+      );
+    }
+
+    const nextName = payload.name?.trim() ?? currentName;
+    const nextPhone = payload.phone_number?.trim() ?? currentPhone;
+    const nextTriageState: CheckInResponseI['triage_state'] =
+      payload.triage_state ??
+      (currentTriageState as CheckInResponseI['triage_state']);
+
+    const oldPhoneLookupKey = this.getPhoneLookupKey(currentPhone.trim());
+    const newPhoneLookupKey = this.getPhoneLookupKey(nextPhone);
+    const isPhoneNumberChanged = oldPhoneLookupKey !== newPhoneLookupKey;
+
+    try {
+      if (isPhoneNumberChanged) {
+        const existingPatientIdOnPhone = await client.get(newPhoneLookupKey);
+
+        if (
+          existingPatientIdOnPhone &&
+          existingPatientIdOnPhone !== normalizedPatientId
+        ) {
+          throw new ConflictException(
+            `Patient with phone number ${nextPhone} is already checked in`,
+          );
+        }
+
+        if (!existingPatientIdOnPhone) {
+          const reservePhoneResult = await client.set(
+            newPhoneLookupKey,
+            normalizedPatientId,
+            {
+              NX: true,
+            },
+          );
+
+          if (reservePhoneResult !== 'OK') {
+            throw new ConflictException(
+              `Patient with phone number ${nextPhone} is already checked in`,
+            );
+          }
+        }
+
+        try {
+          await client.set(
+            patientRecordKey,
+            JSON.stringify({
+              ...parsedPatientRecord,
+              name: nextName,
+              phone_number: nextPhone,
+              triage_state: nextTriageState,
+            }),
+          );
+          await client.del(oldPhoneLookupKey);
+        } catch {
+          if (!existingPatientIdOnPhone) {
+            await client.del(newPhoneLookupKey);
+          }
+
+          throw new ServiceUnavailableException('Unable to update patient');
+        }
+      } else {
+        await client.set(
+          patientRecordKey,
+          JSON.stringify({
+            ...parsedPatientRecord,
+            name: nextName,
+            phone_number: nextPhone,
+            triage_state: nextTriageState,
+          }),
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ConflictException ||
+        error instanceof ServiceUnavailableException
+      ) {
+        throw error;
+      }
+
+      throw new ServiceUnavailableException('Unable to update patient');
+    }
+
+    const admittedAt = new Date(currentAdmittedAt);
+
+    if (Number.isNaN(admittedAt.getTime())) {
+      throw new NotFoundException(
+        `Patient with id ${normalizedPatientId} has invalid data`,
+      );
+    }
+
+    return {
+      id: normalizedPatientId,
+      name: nextName,
+      phone_number: nextPhone,
+      triage_state: nextTriageState,
+      admitted_at: admittedAt,
+      notes: currentNotes,
+    };
+  }
+
   async attachNote(
     patientId: string,
     payload: AttachPatientNotePayloadI,

@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
 } from '@nestjs/common';
 import { ZodValidationPipe } from 'src/shared.decoraters';
@@ -14,6 +15,8 @@ import {
   attachPatientNotePayloadSchema,
   CheckInPayloadI,
   checkInPayloadSchema,
+  UpdatePatientI,
+  updatePatientPayloadSchema,
 } from './patient.dto';
 import { PatientService } from './patient.service';
 
@@ -36,6 +39,15 @@ export class PatientController {
   @Delete('check-out/:patient_id')
   checkOut(@Param('patient_id') patientId: string) {
     return this.patientService.checkOut(patientId);
+  }
+
+  @Patch(':patient_id')
+  async updatePatient(
+    @Param('patient_id') patientId: string,
+    @Body(new ZodValidationPipe(updatePatientPayloadSchema))
+    body: UpdatePatientI,
+  ) {
+    return this.patientService.updatePatient(patientId, body);
   }
 
   @Get('details/:patient_id')
