@@ -1,48 +1,41 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useAuth } from '../auth/useAuth'
-import { TypeaheadInput } from '../features/receptionist/components/TypeaheadInput'
+import { CodeSelector } from '../features/receptionist/components/CodeSelector'
+import { Modal } from '../features/receptionist/components/Modal'
+import { PatientAgendaTimeline } from '../features/receptionist/components/PatientAgendaTimeline'
 import { TriageBadge } from '../features/receptionist/components/TriageBadge'
+import { TypeaheadInput } from '../features/receptionist/components/TypeaheadInput'
 import { useHospitalState } from '../features/receptionist/hooks/useHospitalState'
 import {
-  addDoctorTask,
+  addAssignments,
   buildSpecialtyCatalog,
   checkoutPatient,
   createPatient,
-  getPatientDoctorLabel,
-  getPatientOpenTaskCount,
-  getPatientPendingTestCount,
-  getPatientReadyReturnCount,
-  prefetchPatientDetails,
   getUnreadNotificationCount,
   getVisibleNotifications,
   markNotificationRead,
-  markTestItemDone,
-  sendPatientBackToDoctor,
-  updateDoctorTask,
+  prefetchPatientDetails,
   updatePatientCore,
 } from '../features/receptionist/services/mockPatientApi'
 import type {
+  AssignmentCode,
+  AssignmentDraft,
+  CatalogOption,
   CheckInPatientInput,
-  DoctorTaskDraft,
   HospitalMutationResult,
   HospitalSnapshot,
   Patient,
-  PatientDoctorTask,
   PatientMutationActor,
-  TriageState,
   UpdatePatientCoreInput,
   WorkspaceNotification,
 } from '../features/receptionist/types/patient'
 import {
   buildPatientOverviewSummary,
   canCheckoutPatient,
-  getActiveDoctorTasks,
-  getDoctorLabelById,
-  getDoctorTasks,
+  getPatientAgendaPendingCount,
+  getPatientBoardCode,
   getPatientDisplayStatus,
-  getPatientPriorityCode,
-  getTestRequests,
-  getTriagePriority,
+  getPatientNextDestinationLabel,
   sortPatientsForOverview,
 } from '../features/receptionist/utils/patientQueue'
 
@@ -55,10 +48,6 @@ interface PatientQueueRolePageProps {
   canCheckoutPatients: boolean
   canRegisterPatients: boolean
   contextLabel: string
-}
-
-interface TaskDraftRow extends DoctorTaskDraft {
-  id: string
 }
 
 const admittedAtFormatter = new Intl.DateTimeFormat('en-GB', {
@@ -81,38 +70,35 @@ function formatCompactTime(value: string) {
   return compactTimeFormatter.format(new Date(value))
 }
 
-function buildTaskDraftRow(specialty = ''): TaskDraftRow {
-  return {
-    id: `${specialty}-${crypto.randomUUID()}`,
-    specialty,
-  }
-}
-
 function statusStyles(status: ReturnType<typeof getPatientDisplayStatus>) {
   switch (status) {
-    case 'with_doctor':
+    case 'with_staff':
       return 'border-[var(--blue-border)] bg-[var(--blue-soft)] text-[var(--blue-text)]'
-    case 'tests_pending':
+    case 'lab_collection':
       return 'border-[var(--purple-border)] bg-[var(--purple-soft)] text-[var(--purple-text)]'
-    case 'tests_ready':
+    case 'waiting_results':
       return 'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]'
+    case 'results_ready':
+      return 'border-[var(--teal-border)] bg-[var(--teal-soft)] text-[var(--teal-strong)]'
     case 'done':
       return 'border-[var(--green-border)] bg-[var(--green-soft)] text-[var(--green-text)]'
     case 'checked_out':
       return 'border-[var(--border-soft)] bg-[var(--surface-soft)] text-[var(--text-secondary)]'
     case 'waiting':
-      return 'border-[var(--teal-border)] bg-[var(--teal-soft)] text-[var(--teal-strong)]'
+      return 'border-[var(--border-soft)] bg-white text-[var(--text-primary)]'
   }
 }
 
 function statusLabel(status: ReturnType<typeof getPatientDisplayStatus>) {
   switch (status) {
-    case 'with_doctor':
-      return 'With doctor'
-    case 'tests_pending':
-      return 'Tests running'
-    case 'tests_ready':
-      return 'Tests ready'
+    case 'with_staff':
+      return 'With staff'
+    case 'lab_collection':
+      return 'Tests to take'
+    case 'waiting_results':
+      return 'Waiting for results'
+    case 'results_ready':
+      return 'Results ready'
     case 'done':
       return 'Done'
     case 'checked_out':
@@ -120,39 +106,6 @@ function statusLabel(status: ReturnType<typeof getPatientDisplayStatus>) {
     case 'waiting':
       return 'Waiting'
   }
-}
-
-function taskStatusLabel(status: PatientDoctorTask['status']) {
-  switch (status) {
-    case 'with_doctor':
-      return 'With doctor'
-    case 'queued':
-      return 'Queued'
-    case 'not_here':
-      return 'Not here'
-    case 'done':
-      return 'Done'
-  }
-}
-
-function sortTasksForDisplay(tasks: PatientDoctorTask[]) {
-  return [...tasks].sort((left, right) => {
-    if (left.status === 'done' || right.status === 'done') {
-      if (left.status === right.status) {
-        return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
-      }
-
-      return left.status === 'done' ? 1 : -1
-    }
-
-    const priorityDelta = getTriagePriority(left.triageState) - getTriagePriority(right.triageState)
-
-    if (priorityDelta !== 0) {
-      return priorityDelta
-    }
-
-    return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
-  })
 }
 
 function Shell({
@@ -168,9 +121,7 @@ function Shell({
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-primary)]">
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 px-4 py-5 sm:px-6 lg:px-8">
         <header className="flex flex-wrap items-center justify-between gap-3 rounded-[1.35rem] border border-[var(--border-soft)] bg-white/92 px-4 py-3 shadow-[0_18px_50px_rgba(19,56,78,0.06)]">
-          <div className="flex min-w-0 items-center gap-3">
-            {actions}
-          </div>
+          <div className="flex min-w-0 items-center gap-3">{actions}</div>
           <div className="flex flex-wrap items-center gap-2">{rightActions}</div>
         </header>
         {children}
@@ -179,83 +130,44 @@ function Shell({
   )
 }
 
-function CodeSelector({
-  disabled,
-  onChange,
-  value,
+function NextStepDrafts({
+  drafts,
+  onRemove,
 }: {
-  disabled?: boolean
-  onChange: (value: TriageState) => void
-  value: TriageState
+  drafts: AssignmentDraft[]
+  onRemove: (draftId: string) => void
 }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {(['GREEN', 'YELLOW', 'RED'] as const).map((triageState) => {
-        const isActive = value === triageState
-        const toneClass =
-          triageState === 'GREEN'
-            ? isActive
-              ? 'border-[var(--green-border)] bg-[var(--green-soft)] text-[var(--green-text)]'
-              : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-            : triageState === 'YELLOW'
-              ? isActive
-                ? 'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]'
-                : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-              : isActive
-                ? 'border-[var(--red-border)] bg-[var(--red-soft)] text-[var(--red-text)]'
-                : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-
-        return (
-          <button
-            key={triageState}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${toneClass}`}
-            disabled={disabled}
-            onClick={() => onChange(triageState)}
-            type="button"
-          >
-            {triageState}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function Overlay({
-  children,
-  onClose,
-  open,
-  title,
-}: {
-  children: ReactNode
-  onClose: () => void
-  open: boolean
-  title: string
-}) {
-  if (!open) {
-    return null
+  if (drafts.length === 0) {
+    return (
+      <div className="rounded-[1rem] border border-dashed border-[var(--border-soft)] bg-white p-4 text-sm text-[var(--text-secondary)]">
+        No next steps added yet.
+      </div>
+    )
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(17,35,45,0.46)] p-3 sm:p-5">
-      <section
-        aria-label={title}
-        aria-modal="true"
-        className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-[1.5rem] border border-[var(--border-soft)] bg-white p-4 shadow-[0_30px_80px_rgba(12,35,49,0.28)] sm:p-5"
-        role="dialog"
-      >
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">{title}</h2>
+    <div className="space-y-2">
+      {drafts.map((draft) => (
+        <div
+          key={draft.id}
+          className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-[var(--border-soft)] bg-white px-3 py-3"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--teal-strong)]">
+              Doctor
+            </span>
+            <TriageBadge triageState={draft.code} />
+            <span className="text-sm font-semibold text-[var(--text-primary)]">{draft.label}</span>
+          </div>
           <button
-            className="rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--surface-secondary)]"
-            onClick={onClose}
+            className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition hover:bg-[var(--surface-secondary)]"
+            onClick={() => onRemove(draft.id)}
             type="button"
           >
-            Close
+            Remove
           </button>
         </div>
-        {children}
-      </section>
+      ))}
     </div>
   )
 }
@@ -271,141 +183,109 @@ function RegisterPatientDialog({
   onClose: () => void
   onSubmit: (values: CheckInPatientInput) => Promise<void>
   open: boolean
-  specialtyOptions: Array<{ id: string; keywords: string[]; label: string }>
+  specialtyOptions: CatalogOption[]
 }) {
-  const [initialTasks, setInitialTasks] = useState<TaskDraftRow[]>(() => [buildTaskDraftRow()])
   const [name, setName] = useState('')
   const [notes, setNotes] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
-  const [triageState, setTriageState] = useState<TriageState>('GREEN')
+  const [code, setCode] = useState<AssignmentCode>('GREEN')
+  const [firstSpecialty, setFirstSpecialty] = useState('')
 
   const canSubmit =
     name.trim().length >= 2 &&
     phoneNumber.trim().length > 0 &&
-    initialTasks.every((task) => task.specialty.trim().length > 0)
+    firstSpecialty.trim().length > 0
 
   return (
-    <Overlay onClose={onClose} open={open} title="New patient">
+    <Modal
+      contextLabel="Registry"
+      onClose={onClose}
+      open={open}
+      title="Register patient"
+      footer={
+        <>
+          <button
+            className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition hover:bg-[var(--surface-secondary)]"
+            onClick={onClose}
+            type="button"
+          >
+            Cancel
+          </button>
+          <button
+            className="min-h-14 rounded-[1rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-5 py-3 text-base font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
+            disabled={isSubmitting || !canSubmit}
+            onClick={() =>
+              void onSubmit({
+                defaultCode: code,
+                firstAssignmentCode: code,
+                firstSpecialty,
+                name,
+                notes,
+                phoneNumber,
+              })
+            }
+            type="button"
+          >
+            Register patient
+          </button>
+        </>
+      }
+    >
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <div className="space-y-3">
-          <label className="block text-sm font-medium text-[var(--text-secondary)]">
+        <div className="space-y-4">
+          <label className="block text-sm font-semibold text-[var(--text-primary)]">
             Name
             <input
-              className="mt-1.5 min-h-11 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+              className="mt-2 min-h-14 w-full rounded-[1.1rem] border border-[var(--border-soft)] px-4 py-3 text-base outline-none transition focus:border-[var(--teal-strong)]"
               onChange={(event) => setName(event.target.value)}
               placeholder="Patient name"
               type="text"
               value={name}
             />
           </label>
-          <label className="block text-sm font-medium text-[var(--text-secondary)]">
+          <label className="block text-sm font-semibold text-[var(--text-primary)]">
             Phone
             <input
-              className="mt-1.5 min-h-11 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+              className="mt-2 min-h-14 w-full rounded-[1.1rem] border border-[var(--border-soft)] px-4 py-3 text-base outline-none transition focus:border-[var(--teal-strong)]"
               onChange={(event) => setPhoneNumber(event.target.value)}
               placeholder="Required"
               type="text"
               value={phoneNumber}
             />
           </label>
-          <div className="block text-sm font-medium text-[var(--text-secondary)]">
-            Triage
-            <div className="mt-2">
-              <CodeSelector onChange={setTriageState} value={triageState} />
-            </div>
-          </div>
-          <label className="block text-sm font-medium text-[var(--text-secondary)]">
+          <label className="block text-sm font-semibold text-[var(--text-primary)]">
             Intake note
             <textarea
-              className="mt-1.5 min-h-28 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+              className="mt-2 min-h-28 w-full rounded-[1.1rem] border border-[var(--border-soft)] px-4 py-3 text-base outline-none transition focus:border-[var(--teal-strong)]"
               onChange={(event) => setNotes(event.target.value)}
-              placeholder="Short note"
+              placeholder="Optional short note"
               value={notes}
             />
           </label>
         </div>
 
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[var(--text-primary)]">Needed specialties</p>
-            <button
-              className="rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[var(--surface-secondary)]"
-              onClick={() => setInitialTasks((current) => [...current, buildTaskDraftRow()])}
-              type="button"
-            >
-              Add specialty
-            </button>
+        <div className="space-y-4 rounded-[1.25rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4">
+          <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+            First destination
+          </p>
+          <TypeaheadInput
+            label="Doctor specialty"
+            onChange={setFirstSpecialty}
+            onSelect={setFirstSpecialty}
+            options={specialtyOptions}
+            placeholder="Search specialty"
+            value={firstSpecialty}
+          />
+          <div>
+            <p className="mb-2 text-sm font-semibold text-[var(--text-primary)]">Code</p>
+            <CodeSelector onChange={setCode} value={code} />
           </div>
-
-          {initialTasks.map((task, index) => (
-            <div
-              key={task.id}
-              className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
-            >
-              <TypeaheadInput
-                label={`Specialty ${index + 1}`}
-                onChange={(value) =>
-                  setInitialTasks((current) =>
-                    current.map((candidate, candidateIndex) =>
-                      candidateIndex === index ? { ...candidate, specialty: value } : candidate,
-                    ),
-                  )
-                }
-                onSelect={(value) =>
-                  setInitialTasks((current) =>
-                    current.map((candidate, candidateIndex) =>
-                      candidateIndex === index ? { ...candidate, specialty: value } : candidate,
-                    ),
-                  )
-                }
-                options={specialtyOptions}
-                placeholder="Search specialty"
-                value={task.specialty}
-              />
-              <div className="mt-3 flex items-center justify-end gap-3">
-                {initialTasks.length > 1 ? (
-                  <button
-                    className="rounded-full border border-[var(--red-border)] px-3 py-1.5 text-xs font-semibold text-[var(--red-text)] transition hover:bg-[var(--red-soft)]"
-                    onClick={() =>
-                      setInitialTasks((current) => current.filter((candidate) => candidate.id !== task.id))
-                    }
-                    type="button"
-                  >
-                    Remove
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ))}
+          <p className="text-sm leading-6 text-[var(--text-secondary)]">
+            The registry assigns the first doctor specialty and the patient is routed to the doctor with the smallest queue for that specialty.
+          </p>
         </div>
       </div>
-
-      <div className="mt-5 flex flex-wrap justify-end gap-2">
-        <button
-          className="rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition hover:bg-[var(--surface-secondary)]"
-          onClick={onClose}
-          type="button"
-        >
-          Cancel
-        </button>
-        <button
-          className="rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
-          disabled={isSubmitting || !canSubmit}
-          onClick={() =>
-            void onSubmit({
-              initialTasks: initialTasks.map(({ specialty }) => ({ specialty })),
-              name,
-              notes,
-              phoneNumber,
-              triageState,
-            })
-          }
-          type="button"
-        >
-          Register
-        </button>
-      </div>
-    </Overlay>
+    </Modal>
   )
 }
 
@@ -414,22 +294,20 @@ function NotificationsDialog({
   notifications,
   onClose,
   onMarkRead,
-  onSendBack,
   open,
 }: {
   isSubmitting: boolean
   notifications: WorkspaceNotification[]
   onClose: () => void
   onMarkRead: (notificationId: string) => Promise<void>
-  onSendBack: (notification: WorkspaceNotification) => Promise<void>
   open: boolean
 }) {
   return (
-    <Overlay onClose={onClose} open={open} title="Nurse inbox">
+    <Modal contextLabel="Nurse station" onClose={onClose} open={open} title="Guidance inbox">
       <div className="space-y-3">
         {notifications.length === 0 ? (
           <div className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-            No notifications.
+            No guidance notifications right now.
           </div>
         ) : (
           notifications.map((notification) => (
@@ -452,34 +330,22 @@ function NotificationsDialog({
                     {formatCompactTime(notification.createdAt)}
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {notification.action ? (
-                    <button
-                      className="rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
-                      disabled={isSubmitting}
-                      onClick={() => void onSendBack(notification)}
-                      type="button"
-                    >
-                      Send back
-                    </button>
-                  ) : null}
-                  {!notification.readAt ? (
-                    <button
-                      className="rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-white disabled:opacity-60"
-                      disabled={isSubmitting}
-                      onClick={() => void onMarkRead(notification.id)}
-                      type="button"
-                    >
-                      Mark read
-                    </button>
-                  ) : null}
-                </div>
+                {!notification.readAt ? (
+                  <button
+                    className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition hover:bg-white disabled:opacity-60"
+                    disabled={isSubmitting}
+                    onClick={() => void onMarkRead(notification.id)}
+                    type="button"
+                  >
+                    Mark read
+                  </button>
+                ) : null}
               </div>
             </article>
           ))
         )}
       </div>
-    </Overlay>
+    </Modal>
   )
 }
 
@@ -487,12 +353,10 @@ function PatientDetailsDialog({
   canCheckoutPatients,
   doctors,
   isSubmitting,
-  onAddTask,
+  onAddAssignments,
   onCheckout,
   onClose,
-  onMarkTestDone,
   onSaveCore,
-  onUpdateTask,
   open,
   patient,
   specialtyOptions,
@@ -500,43 +364,84 @@ function PatientDetailsDialog({
   canCheckoutPatients: boolean
   doctors: HospitalSnapshot['doctors']
   isSubmitting: boolean
-  onAddTask: (values: DoctorTaskDraft) => Promise<void>
+  onAddAssignments: (drafts: AssignmentDraft[]) => Promise<void>
   onCheckout: () => Promise<void>
   onClose: () => void
-  onMarkTestDone: (requestId: string, testItemId: string) => Promise<void>
   onSaveCore: (values: UpdatePatientCoreInput) => Promise<void>
-  onUpdateTask: (taskId: string, values: { specialty: string }) => Promise<void>
   open: boolean
   patient: Patient | null
-  specialtyOptions: Array<{ id: string; keywords: string[]; label: string }>
+  specialtyOptions: CatalogOption[]
 }) {
   const [coreName, setCoreName] = useState(patient?.name ?? '')
   const [coreNote, setCoreNote] = useState('')
   const [corePhone, setCorePhone] = useState(patient?.phoneNumber ?? '')
-  const [coreTriageState, setCoreTriageState] = useState<TriageState>(patient?.triageState ?? 'GREEN')
-  const [newTaskSpecialty, setNewTaskSpecialty] = useState('')
-  const [taskForms, setTaskForms] = useState<Record<string, { specialty: string }>>(
-    () =>
-      patient
-        ? Object.fromEntries(
-            getDoctorTasks(patient).map((task) => [task.id, { specialty: task.specialty }]),
-          )
-        : {},
-  )
+  const [coreCode, setCoreCode] = useState<AssignmentCode>(patient?.defaultCode ?? 'GREEN')
+  const [nextStepLabel, setNextStepLabel] = useState('')
+  const [nextStepCode, setNextStepCode] = useState<AssignmentCode>('GREEN')
+  const [drafts, setDrafts] = useState<AssignmentDraft[]>([])
 
   if (!patient) {
     return null
   }
 
   const displayStatus = getPatientDisplayStatus(patient)
-  const doctorTasks = sortTasksForDisplay(getDoctorTasks(patient))
-  const testRequests = getTestRequests(patient)
+
+  function addDraft() {
+    if (nextStepLabel.trim().length === 0) {
+      return
+    }
+
+    const duplicate = drafts.some(
+      (draft) => draft.label.trim().toLowerCase() === nextStepLabel.trim().toLowerCase(),
+    )
+
+    if (duplicate) {
+      return
+    }
+
+    setDrafts((current) => [
+      ...current,
+      {
+        code: nextStepCode,
+        destinationKind: 'doctor',
+        id: crypto.randomUUID(),
+        label: nextStepLabel.trim(),
+      },
+    ])
+    setNextStepLabel('')
+  }
 
   return (
-    <Overlay onClose={onClose} open={open} title={patient.name}>
+    <Modal
+      contextLabel="Patient agenda"
+      onClose={onClose}
+      open={open}
+      title={patient.name}
+      footer={
+        <>
+          <button
+            className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] transition hover:bg-[var(--surface-secondary)]"
+            onClick={onClose}
+            type="button"
+          >
+            Close
+          </button>
+          {canCheckoutPatients && canCheckoutPatient(patient) ? (
+            <button
+              className="min-h-12 rounded-[1rem] border border-[var(--green-border)] bg-[var(--green-soft)] px-4 py-2 text-sm font-semibold text-[var(--green-text)] transition hover:bg-white disabled:opacity-60"
+              disabled={isSubmitting}
+              onClick={() => void onCheckout()}
+              type="button"
+            >
+              Checkout patient
+            </button>
+          ) : null}
+        </>
+      }
+    >
       <div className="space-y-5">
         <div className="flex flex-wrap items-center gap-2">
-          {getPatientPriorityCode(patient) ? <TriageBadge triageState={getPatientPriorityCode(patient)!} /> : null}
+          <TriageBadge triageState={getPatientBoardCode(patient)} />
           <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusStyles(displayStatus)}`}>
             {statusLabel(displayStatus)}
           </span>
@@ -545,221 +450,122 @@ function PatientDetailsDialog({
           </span>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="space-y-3">
-            <label className="block text-sm font-medium text-[var(--text-secondary)]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <section className="space-y-4">
+            <label className="block text-sm font-semibold text-[var(--text-primary)]">
               Name
               <input
-                className="mt-1.5 min-h-11 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+                className="mt-2 min-h-14 w-full rounded-[1.1rem] border border-[var(--border-soft)] px-4 py-3 text-base outline-none transition focus:border-[var(--teal-strong)]"
                 onChange={(event) => setCoreName(event.target.value)}
                 type="text"
                 value={coreName}
               />
             </label>
-            <label className="block text-sm font-medium text-[var(--text-secondary)]">
+            <label className="block text-sm font-semibold text-[var(--text-primary)]">
               Phone
               <input
-                className="mt-1.5 min-h-11 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+                className="mt-2 min-h-14 w-full rounded-[1.1rem] border border-[var(--border-soft)] px-4 py-3 text-base outline-none transition focus:border-[var(--teal-strong)]"
                 onChange={(event) => setCorePhone(event.target.value)}
                 type="text"
                 value={corePhone}
               />
             </label>
-            <label className="block text-sm font-medium text-[var(--text-secondary)]">
+            <div>
+              <p className="mb-2 text-sm font-semibold text-[var(--text-primary)]">Default code</p>
+              <CodeSelector disabled={isSubmitting} onChange={setCoreCode} value={coreCode} />
+            </div>
+            <label className="block text-sm font-semibold text-[var(--text-primary)]">
               Add note
               <textarea
-                className="mt-1.5 min-h-24 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+                className="mt-2 min-h-24 w-full rounded-[1.1rem] border border-[var(--border-soft)] px-4 py-3 text-base outline-none transition focus:border-[var(--teal-strong)]"
                 onChange={(event) => setCoreNote(event.target.value)}
                 placeholder="Optional"
                 value={coreNote}
               />
             </label>
-            <div className="block text-sm font-medium text-[var(--text-secondary)]">
-              Triage
-              <div className="mt-2">
-                <CodeSelector disabled={isSubmitting} onChange={setCoreTriageState} value={coreTriageState} />
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span>Admitted {formatAdmittedAt(patient.admittedAt)}</span>
-              <span className="text-[var(--border-soft)]">•</span>
-              <span>{getPatientDoctorLabel(doctors, patient)}</span>
-            </div>
             <button
-              className="rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
+              className="min-h-14 rounded-[1rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-5 py-3 text-base font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
               disabled={isSubmitting || coreName.trim().length < 2 || corePhone.trim().length === 0}
               onClick={() =>
                 void onSaveCore({
+                  defaultCode: coreCode,
                   name: coreName,
                   note: coreNote,
                   phoneNumber: corePhone,
-                  triageState: coreTriageState,
                 })
               }
               type="button"
             >
               Save patient
             </button>
-          </div>
+          </section>
 
-          <div className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-semibold text-[var(--text-primary)]">Add specialty</p>
-              <TriageBadge triageState={patient.triageState} />
+          <section className="rounded-[1.25rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  Next steps
+                </p>
+                <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                  Add doctor specialties only.
+                </p>
+              </div>
+              <TriageBadge triageState={getPatientBoardCode(patient)} />
             </div>
-            <div className="mt-3">
+
+            <div className="mt-4 space-y-4">
               <TypeaheadInput
-                label="Specialty"
-                onChange={setNewTaskSpecialty}
-                onSelect={setNewTaskSpecialty}
+                label="Doctor specialty"
+                onChange={setNextStepLabel}
+                onSelect={setNextStepLabel}
                 options={specialtyOptions}
                 placeholder="Search specialty"
-                value={newTaskSpecialty}
+                value={nextStepLabel}
               />
+              <div>
+                <p className="mb-2 text-sm font-semibold text-[var(--text-primary)]">Assignment code</p>
+                <CodeSelector onChange={setNextStepCode} value={nextStepCode} />
+              </div>
+              <button
+                className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
+                disabled={isSubmitting || nextStepLabel.trim().length === 0}
+                onClick={addDraft}
+                type="button"
+              >
+                Add doctor step
+              </button>
+              <NextStepDrafts
+                drafts={drafts}
+                onRemove={(draftId) =>
+                  setDrafts((current) => current.filter((candidate) => candidate.id !== draftId))
+                }
+              />
+              <button
+                className="min-h-14 rounded-[1rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-5 py-3 text-base font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
+                disabled={isSubmitting || drafts.length === 0}
+                onClick={() =>
+                  void onAddAssignments(drafts).then(() => {
+                    setDrafts([])
+                    setNextStepLabel('')
+                    setNextStepCode(patient.defaultCode)
+                  })
+                }
+                type="button"
+              >
+                Save next steps
+              </button>
             </div>
-            <button
-              className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
-              disabled={isSubmitting || newTaskSpecialty.trim().length === 0}
-              onClick={() => void onAddTask({ specialty: newTaskSpecialty })}
-              type="button"
-            >
-              Add queue item
-            </button>
-          </div>
+          </section>
         </div>
 
         <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[var(--text-primary)]">Doctor tasks</p>
-            <span className="text-xs text-[var(--text-muted)]">{doctorTasks.length} total</span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Patient agenda</p>
+            <span className="text-xs text-[var(--text-muted)]">
+              Next: {getPatientNextDestinationLabel(patient)}
+            </span>
           </div>
-          <div className="space-y-3">
-            {doctorTasks.map((task) => {
-              const formValues = taskForms[task.id] ?? { specialty: task.specialty }
-
-              return (
-                <article
-                  key={task.id}
-                  className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <TriageBadge triageState={task.triageState} />
-                    <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
-                      {taskStatusLabel(task.status)}
-                    </span>
-                    {task.type === 'return_to_doctor_task' ? (
-                      <span className="rounded-full border border-[var(--blue-border)] bg-[var(--blue-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--blue-text)]">
-                        Return
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                    <TypeaheadInput
-                      label="Specialty"
-                      onChange={(value) =>
-                        setTaskForms((current) => ({
-                          ...current,
-                          [task.id]: { specialty: value },
-                        }))
-                      }
-                      onSelect={(value) =>
-                        setTaskForms((current) => ({
-                          ...current,
-                          [task.id]: { specialty: value },
-                        }))
-                      }
-                      options={specialtyOptions}
-                      placeholder="Search specialty"
-                      value={formValues.specialty}
-                    />
-                    <div className="flex min-w-0 flex-col justify-end gap-3">
-                      <div className="text-xs text-[var(--text-muted)]">
-                        {getDoctorLabelById(doctors, task.assignedDoctorId)}
-                      </div>
-                    </div>
-                  </div>
-                  {task.status !== 'done' ? (
-                    <button
-                      className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
-                      disabled={
-                        isSubmitting ||
-                        formValues.specialty.trim().length === 0 ||
-                        formValues.specialty === task.specialty
-                      }
-                      onClick={() => void onUpdateTask(task.id, formValues)}
-                      type="button"
-                    >
-                      Update queue item
-                    </button>
-                  ) : null}
-                </article>
-              )
-            })}
-          </div>
-        </section>
-
-        <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[var(--text-primary)]">Tests</p>
-            <span className="text-xs text-[var(--text-muted)]">{testRequests.length} groups</span>
-          </div>
-          {testRequests.length === 0 ? (
-            <div className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-              No tests yet.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {testRequests.map((request) => (
-                <article
-                  key={request.id}
-                  className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <TriageBadge triageState={request.triageState} />
-                    <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
-                      {request.status === 'pending'
-                        ? 'Pending'
-                        : request.status === 'ready_for_return'
-                          ? 'Ready for nurse return'
-                          : 'Returned'}
-                    </span>
-                    <span className="text-xs text-[var(--text-muted)]">
-                      Ordered by {request.orderedByLabel}
-                    </span>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {request.items.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-[0.9rem] border border-[var(--border-soft)] bg-white px-3 py-2"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-[var(--text-primary)]">{item.testName}</p>
-                          <p className="text-xs text-[var(--text-muted)]">
-                            {item.testerSpecialty} • {getDoctorLabelById(doctors, item.assignedDoctorId)}
-                          </p>
-                        </div>
-                        {item.status === 'pending' ? (
-                          <button
-                            className="rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--teal-strong)] transition hover:bg-white disabled:opacity-60"
-                            disabled={isSubmitting}
-                            onClick={() => void onMarkTestDone(request.id, item.id)}
-                            type="button"
-                          >
-                            Mark done
-                          </button>
-                        ) : (
-                          <span className="text-xs text-[var(--green-text)]">
-                            Done{item.completedByLabel ? ` by ${item.completedByLabel}` : ''}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
+          <PatientAgendaTimeline doctors={doctors} patient={patient} />
         </section>
 
         <section className="space-y-3">
@@ -787,21 +593,8 @@ function PatientDetailsDialog({
             </div>
           )}
         </section>
-
-        {canCheckoutPatients && canCheckoutPatient(patient) ? (
-          <div className="flex justify-end">
-            <button
-              className="rounded-full border border-[var(--green-border)] bg-[var(--green-soft)] px-4 py-2 text-sm font-semibold text-[var(--green-text)] transition hover:bg-white disabled:opacity-60"
-              disabled={isSubmitting}
-              onClick={() => void onCheckout()}
-              type="button"
-            >
-              Checkout patient
-            </button>
-          </div>
-        ) : null}
       </div>
-    </Overlay>
+    </Modal>
   )
 }
 
@@ -827,15 +620,9 @@ export function PatientQueueRolePage({
   const [isRegisterOpen, setIsRegisterOpen] = useState(false)
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
 
-  const searchableSpecialties = useMemo(
-    () => buildSpecialtyCatalog(doctors),
-    [doctors],
-  )
+  const specialtyOptions = useMemo(() => buildSpecialtyCatalog(doctors), [doctors])
   const selectedPatient = rawPatients.find((patient) => patient.id === selectedPatientId) ?? null
-  const nurseNotifications =
-    activeUser.role === 'nurse'
-      ? getVisibleNotifications(notifications, 'nurse')
-      : []
+  const nurseNotifications = activeUser.role === 'nurse' ? getVisibleNotifications(notifications, 'nurse') : []
   const unreadNotificationCount =
     activeUser.role === 'nurse' ? getUnreadNotificationCount(notifications, 'nurse') : 0
   const patients = sortPatientsForOverview(rawPatients)
@@ -865,6 +652,7 @@ export function PatientQueueRolePage({
   }, [selectedPatientId])
 
   const actor: PatientMutationActor = {
+    isTester: activeUser.isTester,
     role: activeUser.role,
     username: activeUser.username,
   }
@@ -922,7 +710,7 @@ export function PatientQueueRolePage({
           <>
             {activeUser.role === 'nurse' ? (
               <button
-                className="rounded-full border border-[var(--border-soft)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+                className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
                 onClick={() => setIsNotificationsOpen(true)}
                 type="button"
               >
@@ -931,7 +719,7 @@ export function PatientQueueRolePage({
             ) : null}
             {canRegisterPatients ? (
               <button
-                className="rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-3 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)]"
+                className="min-h-12 rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)]"
                 onClick={() => setIsRegisterOpen(true)}
                 type="button"
               >
@@ -939,7 +727,7 @@ export function PatientQueueRolePage({
               </button>
             ) : null}
             <button
-              className="rounded-full border border-[var(--border-soft)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+              className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
               onClick={() => {
                 void logout()
               }}
@@ -953,9 +741,9 @@ export function PatientQueueRolePage({
         <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
           {[
             ['Patients', String(summary.patientCount)],
-            ['Open tasks', String(summary.openDoctorTaskCount)],
-            ['Pending tests', String(summary.pendingTestCount)],
-            ['Ready returns', String(summary.readyReturnCount)],
+            ['Open visits', String(summary.openVisitCount)],
+            ['Pending labs', String(summary.pendingLabItemCount)],
+            ['Waiting results', String(summary.waitingResultsCount)],
             ['Checkout', String(summary.checkoutReadyCount)],
           ].map(([label, value]) => (
             <article
@@ -979,7 +767,7 @@ export function PatientQueueRolePage({
             <div className="rounded-[1rem] border border-[var(--red-border)] bg-[var(--red-soft)] p-4">
               <p className="text-sm font-semibold text-[var(--red-text)]">{loadError}</p>
               <button
-                className="mt-3 rounded-full border border-[var(--border-soft)] bg-white px-3 py-1.5 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+                className="mt-3 min-h-12 rounded-full border border-[var(--border-soft)] bg-white px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
                 onClick={reloadHospitalState}
                 type="button"
               >
@@ -994,9 +782,7 @@ export function PatientQueueRolePage({
             <div className="space-y-3">
               {patients.map((patient) => {
                 const displayStatus = getPatientDisplayStatus(patient)
-                const activeTasks = sortTasksForDisplay(getActiveDoctorTasks(patient))
-                const leadTask = activeTasks[0] ?? null
-                const primaryCode = getPatientPriorityCode(patient)
+                const boardCode = getPatientBoardCode(patient)
 
                 return (
                   <article
@@ -1009,7 +795,7 @@ export function PatientQueueRolePage({
                           <h2 className="text-base font-semibold break-words text-[var(--text-primary)]">
                             {patient.name}
                           </h2>
-                          {primaryCode ? <TriageBadge triageState={primaryCode} /> : null}
+                          <TriageBadge triageState={boardCode} />
                           <span
                             className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusStyles(displayStatus)}`}
                           >
@@ -1018,18 +804,16 @@ export function PatientQueueRolePage({
                         </div>
                         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--text-secondary)]">
                           <span>{formatAdmittedAt(patient.admittedAt)}</span>
-                          <span>{leadTask ? leadTask.specialty : 'No active task'}</span>
-                          <span>{getPatientDoctorLabel(doctors, patient)}</span>
+                          <span>Next: {getPatientNextDestinationLabel(patient)}</span>
                         </div>
                         <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
-                          <span>{getPatientOpenTaskCount(patient)} open tasks</span>
-                          <span>{getPatientPendingTestCount(patient)} pending tests</span>
-                          <span>{getPatientReadyReturnCount(patient)} ready returns</span>
+                          <span>{getPatientAgendaPendingCount(patient)} pending items</span>
+                          <span>Default code {patient.defaultCode.toLowerCase()}</span>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button
-                          className="rounded-full border border-[var(--border-soft)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white"
+                          className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white"
                           onClick={() => setSelectedPatientId(patient.id)}
                           type="button"
                         >
@@ -1037,10 +821,8 @@ export function PatientQueueRolePage({
                         </button>
                         {canCheckoutPatients && canCheckoutPatient(patient) ? (
                           <button
-                            className="rounded-full border border-[var(--green-border)] bg-[var(--green-soft)] px-3 py-2 text-sm font-semibold text-[var(--green-text)] transition hover:bg-white"
-                            onClick={() => {
-                              setSelectedPatientId(patient.id)
-                            }}
+                            className="min-h-12 rounded-full border border-[var(--green-border)] bg-[var(--green-soft)] px-4 py-2 text-sm font-semibold text-[var(--green-text)] transition hover:bg-white"
+                            onClick={() => setSelectedPatientId(patient.id)}
                             type="button"
                           >
                             Ready to checkout
@@ -1093,7 +875,7 @@ export function PatientQueueRolePage({
           setIsRegisterOpen(false)
         }}
         open={isRegisterOpen}
-        specialtyOptions={searchableSpecialties}
+        specialtyOptions={specialtyOptions}
       />
 
       <NotificationsDialog
@@ -1109,30 +891,6 @@ export function PatientQueueRolePage({
             markNotificationRead(rawPatients, doctors, notifications, notificationId),
           )
         }
-        onSendBack={(notification) =>
-          runMutation(
-            'nurse-notification',
-            () => {
-              if (!notification.action) {
-                throw new Error('Notification action is unavailable.')
-              }
-
-              return sendPatientBackToDoctor(
-                rawPatients,
-                doctors,
-                notifications,
-                notification.action.patientId,
-                notification.action.requestId,
-                {
-                  role: 'nurse',
-                  username: activeUser.username,
-                },
-              )
-            },
-            (result) =>
-              'patient' in result ? `${result.patient.name} was returned to the ordering doctor.` : 'Patient returned.',
-          )
-        }
         open={isNotificationsOpen}
       />
 
@@ -1141,12 +899,16 @@ export function PatientQueueRolePage({
         doctors={doctors}
         isSubmitting={busyKey !== null}
         key={selectedPatient ? `${selectedPatient.id}-${selectedPatient.lastUpdatedAt}` : 'no-patient'}
-        onAddTask={(values) =>
+        onAddAssignments={(drafts) =>
           runMutation(
-            'patient-task',
-            () => addDoctorTask(rawPatients, doctors, notifications, selectedPatient!.id, values, actor),
+            'patient-assignments',
+            () =>
+              addAssignments(rawPatients, doctors, notifications, selectedPatient!.id, {
+                assignments: drafts,
+                note: '',
+              }, actor),
             (result) =>
-              'patient' in result ? `${result.patient.name} now has an extra specialty task.` : 'Task added.',
+              'patient' in result ? `Agenda updated for ${result.patient.name}.` : 'Agenda updated.',
           )
         }
         onCheckout={() =>
@@ -1162,15 +924,6 @@ export function PatientQueueRolePage({
             setSelectedPatientId(null)
           }
         }}
-        onMarkTestDone={(requestId, testItemId) =>
-          runMutation(
-            'test-done',
-            () =>
-              markTestItemDone(rawPatients, doctors, notifications, selectedPatient!.id, requestId, testItemId, actor),
-            (result) =>
-              'patient' in result ? `Updated tests for ${result.patient.name}.` : 'Test updated.',
-          )
-        }
         onSaveCore={(values) =>
           runMutation(
             'patient-core',
@@ -1179,17 +932,9 @@ export function PatientQueueRolePage({
               'patient' in result ? `${result.patient.name} updated.` : 'Patient updated.',
           )
         }
-        onUpdateTask={(taskId, values) =>
-          runMutation(
-            'patient-task-update',
-            () => updateDoctorTask(rawPatients, doctors, notifications, selectedPatient!.id, taskId, values),
-            (result) =>
-              'patient' in result ? `${result.patient.name} task updated.` : 'Task updated.',
-          )
-        }
         open={selectedPatient !== null}
         patient={selectedPatient}
-        specialtyOptions={searchableSpecialties}
+        specialtyOptions={specialtyOptions}
       />
     </>
   )

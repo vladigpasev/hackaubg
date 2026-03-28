@@ -1,23 +1,27 @@
 import type { AuthUser } from '../../../auth/types'
 import {
   canCheckoutPatient,
-  getDoctorLabelById,
-  getDoctorTasks,
-  getPendingTestItems,
-  getReadyReturnRequests,
-  getTriagePriority,
-  getTestRequests,
+  getDoctorQueueLoad,
+  getDoctorVisits,
+  getLabQueueCount,
+  getLabBatches,
+  getNextActionableCandidate,
 } from '../utils/patientQueue'
-import { buildClinicianDirectory, buildSpecialtyCatalog, getTestCatalog, normalizeSpecialty } from './clinicianDirectory'
+import {
+  buildClinicianDirectory,
+  buildSpecialtyCatalog,
+  getTestCatalog,
+  normalizeSpecialty,
+} from './clinicianDirectory'
 import {
   attachPatientNote,
   checkInPatient,
   deletePatient,
   getHospitalStreamUrl,
   getPatientDetails as fetchPatientDetailsFromApi,
+  HospitalApiError,
   listPatients,
   patchPatient,
-  HospitalApiError,
 } from './hospitalApi'
 import {
   getPatientOverlay,
@@ -27,24 +31,21 @@ import {
   saveOverlayStore,
 } from './hospitalOverlay'
 import type {
+  AddAssignmentsInput,
+  AssignmentCode,
   BackendPatientCore,
   BackendPatientDetails,
   CatalogOption,
   CheckInPatientInput,
-  CreateTestRequestInput,
   DoctorProfile,
-  DoctorTaskDraft,
   HospitalMutationResult,
   HospitalSnapshot,
   Patient,
-  PatientDoctorTask,
+  PatientAgendaEntry,
+  PatientLabBatch,
+  PatientLabItem,
   PatientMutationActor,
   PatientNote,
-  PatientTask,
-  PatientTestItem,
-  PatientTestRequest,
-  TriageState,
-  UpdateDoctorTaskInput,
   UpdatePatientCoreInput,
   WorkspaceNotification,
 } from '../types/patient'
@@ -53,6 +54,18 @@ const detailCache = new Map<string, BackendPatientDetails>()
 
 function normalizeValue(value: string) {
   return value.trim().toLowerCase()
+}
+
+export function normalizeBackendCode(code: BackendPatientCore['triageState']): AssignmentCode {
+  return code === 'GREEN' ? 'GREEN' : 'YELLOW'
+}
+
+function toBackendCode(code: AssignmentCode): 'GREEN' | 'YELLOW' {
+  return code
+}
+
+function timestamp(value: string) {
+  return new Date(value).getTime()
 }
 
 function cloneDoctor(doctor: DoctorProfile): DoctorProfile {
@@ -65,21 +78,26 @@ function cloneDoctor(doctor: DoctorProfile): DoctorProfile {
 function cloneNotification(notification: WorkspaceNotification): WorkspaceNotification {
   return {
     ...notification,
-    action: notification.action ? { ...notification.action } : null,
   }
 }
 
-function cloneTask(task: PatientTask): PatientTask {
-  if (task.type === 'test_request') {
+function cloneLabItem(item: PatientLabItem): PatientLabItem {
+  return {
+    ...item,
+  }
+}
+
+function cloneAgendaEntry(entry: PatientAgendaEntry): PatientAgendaEntry {
+  if (entry.entryType === 'lab_batch') {
     return {
-      ...task,
-      items: task.items.map((item) => ({ ...item })),
-    } satisfies PatientTestRequest
+      ...entry,
+      items: entry.items.map(cloneLabItem),
+    }
   }
 
   return {
-    ...task,
-  } satisfies PatientDoctorTask
+    ...entry,
+  }
 }
 
 function clonePatient(patient: Patient): Patient {
@@ -97,11 +115,11 @@ function clonePatient(patient: Patient): Patient {
           queue: patient.detail.queue.map((entry) => ({ ...entry })),
         }
       : null,
+    agenda: patient.agenda.map(cloneAgendaEntry),
     notes: patient.notes.map((note) => ({ ...note })),
     overlay: {
-      tasks: patient.overlay.tasks.map(cloneTask),
+      agenda: patient.overlay.agenda.map(cloneAgendaEntry),
     },
-    tasks: patient.tasks.map(cloneTask),
   }
 }
 
@@ -113,48 +131,34 @@ function cloneSnapshot(snapshot: HospitalSnapshot): HospitalSnapshot {
   }
 }
 
-function ensureFilled(value: string, fieldLabel: string) {
+function ensureFilled(value: string, label: string) {
   if (value.trim().length === 0) {
-    throw new Error(`${fieldLabel} is required.`)
+    throw new Error(`${label} is required.`)
   }
 }
 
 function validatePatientName(name: string) {
-  const trimmedName = name.trim()
+  ensureFilled(name, 'Name')
 
-  ensureFilled(trimmedName, 'Name')
-
-  if (trimmedName.length < 2) {
+  if (name.trim().length < 2) {
     throw new Error('Name must be at least 2 characters.')
   }
 }
 
 function validatePhoneNumber(phoneNumber: string) {
-  const trimmedPhoneNumber = phoneNumber.trim()
+  ensureFilled(phoneNumber, 'Phone number')
 
-  ensureFilled(trimmedPhoneNumber, 'Phone number')
+  const digitsOnly = phoneNumber.replace(/\D/g, '')
 
-  const digitsOnly = trimmedPhoneNumber.replace(/\D/g, '')
-
-  if (digitsOnly.length < 7 || !/^\+?[0-9\s()-]+$/.test(trimmedPhoneNumber)) {
+  if (digitsOnly.length < 7 || !/^\+?[0-9\s()-]+$/.test(phoneNumber.trim())) {
     throw new Error('Phone number must be valid.')
   }
 }
 
-function validateTriageState(triageState: TriageState) {
-  if (triageState !== 'GREEN' && triageState !== 'YELLOW' && triageState !== 'RED') {
-    throw new Error('Triage state must be Green, Yellow, or Red.')
+function validateCode(code: AssignmentCode) {
+  if (code !== 'GREEN' && code !== 'YELLOW') {
+    throw new Error('Code must be Green or Yellow.')
   }
-}
-
-function validateTaskDrafts(taskDrafts: DoctorTaskDraft[]) {
-  if (taskDrafts.length === 0) {
-    throw new Error('At least one specialty is required.')
-  }
-
-  taskDrafts.forEach((taskDraft) => {
-    ensureFilled(taskDraft.specialty, 'Specialty')
-  })
 }
 
 function getNoteId(patientId: string, index: number, text: string) {
@@ -171,34 +175,25 @@ function buildServerNotes(core: BackendPatientCore): PatientNote[] {
   }))
 }
 
-function getLastUpdatedAt(core: BackendPatientCore, overlayTasks: PatientTask[]) {
-  const overlayUpdatedAt = overlayTasks.reduce((latest, task) => {
-    const taskUpdatedAt = new Date(task.updatedAt).getTime()
-
-    if (Number.isNaN(taskUpdatedAt)) {
-      return latest
-    }
-
-    return Math.max(latest, taskUpdatedAt)
-  }, new Date(core.admittedAt).getTime())
-
-  return new Date(overlayUpdatedAt).toISOString()
+function getLastUpdatedAt(core: BackendPatientCore, agenda: PatientAgendaEntry[]) {
+  return new Date(
+    agenda.reduce((latest, entry) => Math.max(latest, timestamp(entry.updatedAt)), timestamp(core.admittedAt)),
+  ).toISOString()
 }
 
-function mergePatient(core: BackendPatientCore, overlayTasks: PatientTask[]): Patient {
+function mergePatient(core: BackendPatientCore, overlayAgenda: PatientAgendaEntry[]): Patient {
   const detail = detailCache.get(core.id) ?? null
-  const tasks = overlayTasks.map(cloneTask).map((task) => ({
-    ...task,
-    triageState: core.triageState,
-  })) as PatientTask[]
+  const agenda = overlayAgenda.map(cloneAgendaEntry)
 
   return {
     admittedAt: core.admittedAt,
+    agenda,
     checkedOutAt: null,
     core: {
       ...core,
       notes: [...core.notes],
     },
+    defaultCode: normalizeBackendCode(core.triageState),
     detail: detail
       ? {
           ...detail,
@@ -208,15 +203,13 @@ function mergePatient(core: BackendPatientCore, overlayTasks: PatientTask[]): Pa
         }
       : null,
     id: core.id,
-    lastUpdatedAt: getLastUpdatedAt(core, tasks),
+    lastUpdatedAt: getLastUpdatedAt(core, agenda),
     name: core.name,
     notes: buildServerNotes(core),
     overlay: {
-      tasks: tasks.map(cloneTask),
+      agenda: agenda.map(cloneAgendaEntry),
     },
     phoneNumber: core.phoneNumber,
-    tasks,
-    triageState: core.triageState,
   }
 }
 
@@ -239,11 +232,11 @@ function snapshotToOverlayStore(snapshot: HospitalSnapshot) {
     notifications: snapshot.notifications.map(cloneNotification),
     patientOverlays: Object.fromEntries(
       snapshot.patients
-        .filter((patient) => patient.tasks.length > 0)
+        .filter((patient) => patient.agenda.length > 0)
         .map((patient) => [
           patient.id,
           {
-            tasks: patient.tasks.map(cloneTask),
+            agenda: patient.agenda.map(cloneAgendaEntry),
           },
         ]),
     ),
@@ -264,31 +257,31 @@ function findPatientOrThrow(patients: Patient[], patientId: string) {
   return patient
 }
 
-function findDoctorTaskOrThrow(patient: Patient, taskId: string) {
-  const task = getDoctorTasks(patient).find((candidate) => candidate.id === taskId)
+function findDoctorVisitOrThrow(patient: Patient, visitId: string) {
+  const visit = getDoctorVisits(patient).find((candidate) => candidate.id === visitId)
 
-  if (!task) {
-    throw new Error('Queue item details are unavailable right now.')
+  if (!visit) {
+    throw new Error('Visit details are unavailable right now.')
   }
 
-  return task
+  return visit
 }
 
-function findTestRequestOrThrow(patient: Patient, requestId: string) {
-  const request = getTestRequests(patient).find((candidate) => candidate.id === requestId)
+function findLabBatchOrThrow(patient: Patient, batchId: string) {
+  const batch = getLabBatches(patient).find((candidate) => candidate.id === batchId)
 
-  if (!request) {
-    throw new Error('Test request details are unavailable right now.')
+  if (!batch) {
+    throw new Error('Lab batch details are unavailable right now.')
   }
 
-  return request
+  return batch
 }
 
-function findTestItemOrThrow(request: PatientTestRequest, testItemId: string) {
-  const item = request.items.find((candidate) => candidate.id === testItemId)
+function findLabItemOrThrow(batch: PatientLabBatch, itemId: string) {
+  const item = batch.items.find((candidate) => candidate.id === itemId)
 
   if (!item) {
-    throw new Error('Test item details are unavailable right now.')
+    throw new Error('Lab item details are unavailable right now.')
   }
 
   return item
@@ -314,7 +307,7 @@ function getMatchingDoctors(doctors: DoctorProfile[], specialty: string) {
   )
 }
 
-function getDoctorTaskLoadExcludingTask(patients: Patient[], doctorId: string, excludedTaskId?: string) {
+function getDoctorVisitLoadExcludingVisit(patients: Patient[], doctorId: string, excludedVisitId?: string) {
   return patients.reduce((count, patient) => {
     if (patient.checkedOutAt) {
       return count
@@ -322,17 +315,17 @@ function getDoctorTaskLoadExcludingTask(patients: Patient[], doctorId: string, e
 
     return (
       count +
-      getDoctorTasks(patient).filter(
-        (task) =>
-          task.assignedDoctorId === doctorId &&
-          task.status !== 'done' &&
-          task.id !== excludedTaskId,
+      getDoctorVisits(patient).filter(
+        (visit) =>
+          visit.assignedDoctorId === doctorId &&
+          visit.status !== 'done' &&
+          visit.id !== excludedVisitId,
       ).length
     )
   }, 0)
 }
 
-function getTestItemLoad(patients: Patient[], doctorId: string, excludedItemId?: string) {
+function getLabItemLoadExcludingItem(patients: Patient[], doctorId: string, excludedItemId?: string) {
   return patients.reduce((count, patient) => {
     if (patient.checkedOutAt) {
       return count
@@ -340,13 +333,13 @@ function getTestItemLoad(patients: Patient[], doctorId: string, excludedItemId?:
 
     return (
       count +
-      getTestRequests(patient).reduce(
-        (requestCount, request) =>
-          requestCount +
-          request.items.filter(
+      getLabBatches(patient).reduce(
+        (batchCount, batch) =>
+          batchCount +
+          batch.items.filter(
             (item) =>
               item.assignedDoctorId === doctorId &&
-              item.status === 'pending' &&
+              item.status !== 'taken' &&
               item.id !== excludedItemId,
           ).length,
         0,
@@ -359,7 +352,7 @@ function chooseBestDoctorId(
   specialty: string,
   doctors: DoctorProfile[],
   patients: Patient[],
-  excludedTaskId?: string,
+  excludedVisitId?: string,
 ) {
   const matchingDoctors = getMatchingDoctors(doctors, specialty).filter((doctor) => !doctor.isTester)
 
@@ -369,8 +362,8 @@ function chooseBestDoctorId(
 
   return [...matchingDoctors]
     .sort((left, right) => {
-      const leftLoad = getDoctorTaskLoadExcludingTask(patients, left.id, excludedTaskId)
-      const rightLoad = getDoctorTaskLoadExcludingTask(patients, right.id, excludedTaskId)
+      const leftLoad = getDoctorVisitLoadExcludingVisit(patients, left.id, excludedVisitId)
+      const rightLoad = getDoctorVisitLoadExcludingVisit(patients, right.id, excludedVisitId)
 
       if (leftLoad !== rightLoad) {
         return leftLoad - rightLoad
@@ -381,7 +374,7 @@ function chooseBestDoctorId(
     .id
 }
 
-function chooseBestTesterDoctorId(
+function chooseBestTesterId(
   testerSpecialty: string,
   doctors: DoctorProfile[],
   patients: Patient[],
@@ -395,8 +388,8 @@ function chooseBestTesterDoctorId(
 
   return [...matchingDoctors]
     .sort((left, right) => {
-      const leftLoad = getTestItemLoad(patients, left.id, excludedItemId)
-      const rightLoad = getTestItemLoad(patients, right.id, excludedItemId)
+      const leftLoad = getLabItemLoadExcludingItem(patients, left.id, excludedItemId)
+      const rightLoad = getLabItemLoadExcludingItem(patients, right.id, excludedItemId)
 
       if (leftLoad !== rightLoad) {
         return leftLoad - rightLoad
@@ -407,176 +400,272 @@ function chooseBestTesterDoctorId(
     .id
 }
 
-function compareTaskPriority(left: PatientDoctorTask, right: PatientDoctorTask) {
-  if (left.triageState !== right.triageState) {
-    return getTriagePriority(left.triageState) - getTriagePriority(right.triageState)
+function compareByCodeAndTime(
+  leftCode: AssignmentCode,
+  leftStatus: 'queued' | 'with_staff' | 'not_here' | 'done' | 'taken',
+  leftCreatedAt: string,
+  leftId: string,
+  rightCode: AssignmentCode,
+  rightStatus: 'queued' | 'with_staff' | 'not_here' | 'done' | 'taken',
+  rightCreatedAt: string,
+  rightId: string,
+) {
+  if (leftStatus === 'with_staff' || rightStatus === 'with_staff') {
+    if (leftStatus === rightStatus) {
+      return 0
+    }
+
+    return leftStatus === 'with_staff' ? -1 : 1
   }
 
-  const createdAtDelta = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+  const leftStatusRank = leftStatus === 'queued' ? 0 : leftStatus === 'not_here' ? 1 : 2
+  const rightStatusRank = rightStatus === 'queued' ? 0 : rightStatus === 'not_here' ? 1 : 2
+
+  if (leftStatusRank !== rightStatusRank) {
+    return leftStatusRank - rightStatusRank
+  }
+
+  const codeDelta =
+    (leftCode === 'YELLOW' ? 0 : 1) -
+    (rightCode === 'YELLOW' ? 0 : 1)
+
+  if (codeDelta !== 0) {
+    return codeDelta
+  }
+
+  const createdAtDelta = timestamp(leftCreatedAt) - timestamp(rightCreatedAt)
 
   if (createdAtDelta !== 0) {
     return createdAtDelta
   }
 
-  return left.id.localeCompare(right.id)
+  return leftId.localeCompare(rightId)
 }
 
 function rebalanceDoctorQueueForDoctor(patients: Patient[], doctorId: string) {
-  const activeDoctorTasks = patients.flatMap((patient) =>
-    getDoctorTasks(patient).filter(
-      (task) => task.assignedDoctorId === doctorId && task.status !== 'done',
+  const visits = patients.flatMap((patient) =>
+    getDoctorVisits(patient).filter(
+      (visit) => visit.assignedDoctorId === doctorId && visit.status !== 'done',
     ),
   )
 
-  const currentTasks = activeDoctorTasks
-    .filter((task) => task.status === 'with_doctor')
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+  const currentVisit =
+    [...visits]
+      .filter((visit) => visit.status === 'with_staff')
+      .sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt))[0] ?? null
 
-  currentTasks.slice(1).forEach((task) => {
-    task.status = 'queued'
-  })
+  visits
+    .filter((visit) => visit.id !== currentVisit?.id)
+    .forEach((visit) => {
+      if (visit.status === 'with_staff') {
+        visit.status = 'queued'
+      }
+    })
 
-  const currentTask = currentTasks[0] ?? null
-
-  if (currentTask) {
-    currentTask.queueOrder = 0
+  if (currentVisit) {
+    currentVisit.queueOrder = 0
   }
 
-  activeDoctorTasks
-    .filter((task) => task.id !== currentTask?.id)
-    .sort(compareTaskPriority)
-    .forEach((task, index) => {
-      task.queueOrder = index + 1
+  visits
+    .filter((visit) => visit.id !== currentVisit?.id)
+    .sort((left, right) =>
+      compareByCodeAndTime(
+        left.code,
+        left.status,
+        left.createdAt,
+        left.id,
+        right.code,
+        right.status,
+        right.createdAt,
+        right.id,
+      ),
+    )
+    .forEach((visit, index) => {
+      visit.queueOrder = index + 1
     })
 }
 
-function rebalanceAllDoctorQueues(patients: Patient[], doctors: DoctorProfile[]) {
-  doctors.forEach((doctor) => {
-    rebalanceDoctorQueueForDoctor(patients, doctor.id)
-  })
+function rebalanceLabQueueForDoctor(patients: Patient[], doctorId: string) {
+  const items = patients.flatMap((patient) =>
+    getLabBatches(patient).flatMap((batch) =>
+      batch.items.filter((item) => item.assignedDoctorId === doctorId && item.status !== 'taken'),
+    ),
+  )
+
+  const currentItem =
+    [...items]
+      .filter((item) => item.status === 'with_staff')
+      .sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt))[0] ?? null
+
+  items
+    .filter((item) => item.id !== currentItem?.id)
+    .forEach((item) => {
+      if (item.status === 'with_staff') {
+        item.status = 'queued'
+      }
+    })
+
+  if (currentItem) {
+    currentItem.queueOrder = 0
+  }
+
+  items
+    .filter((item) => item.id !== currentItem?.id)
+    .sort((left, right) =>
+      compareByCodeAndTime(
+        left.code,
+        left.status,
+        left.createdAt,
+        left.id,
+        right.code,
+        right.status,
+        right.createdAt,
+        right.id,
+      ),
+    )
+    .forEach((item, index) => {
+      item.queueOrder = index + 1
+    })
 }
 
 function reconcileAssignments(doctors: DoctorProfile[], patients: Patient[]) {
   patients.forEach((patient) => {
-    getDoctorTasks(patient).forEach((task) => {
-      task.triageState = patient.triageState
-
-      if (task.status === 'done') {
+    getDoctorVisits(patient).forEach((visit) => {
+      if (visit.status === 'done') {
         return
       }
 
-      task.assignedDoctorId =
-        task.type === 'return_to_doctor_task' && task.assignedDoctorId
-          ? doctors.some((doctor) => doctor.id === task.assignedDoctorId)
-            ? task.assignedDoctorId
-            : chooseBestDoctorId(task.specialty, doctors, patients, task.id)
-          : chooseBestDoctorId(task.specialty, doctors, patients, task.id)
+      if (visit.assignedDoctorId && doctors.some((doctor) => doctor.id === visit.assignedDoctorId && !doctor.isTester)) {
+        return
+      }
+
+      visit.assignedDoctorId = chooseBestDoctorId(visit.specialty, doctors, patients, visit.id)
     })
 
-    getTestRequests(patient).forEach((request) => {
-      request.triageState = patient.triageState
-
-      request.items.forEach((item) => {
-        if (item.status === 'done') {
+    getLabBatches(patient).forEach((batch) => {
+      batch.items.forEach((item) => {
+        if (item.status === 'taken') {
           return
         }
 
-        item.assignedDoctorId = chooseBestTesterDoctorId(
-          item.testerSpecialty,
-          doctors,
-          patients,
-          item.id,
-        )
+        if (item.assignedDoctorId && doctors.some((doctor) => doctor.id === item.assignedDoctorId && doctor.isTester)) {
+          return
+        }
+
+        item.assignedDoctorId = chooseBestTesterId(item.testerSpecialty, doctors, patients, item.id)
       })
     })
   })
 
-  rebalanceAllDoctorQueues(patients, doctors)
+  doctors.forEach((doctor) => {
+    if (doctor.isTester) {
+      rebalanceLabQueueForDoctor(patients, doctor.id)
+      return
+    }
+
+    rebalanceDoctorQueueForDoctor(patients, doctor.id)
+  })
 }
 
 function buildNotificationId() {
   return `NT-${crypto.randomUUID()}`
 }
 
-function buildDoctorTaskId() {
-  return `DT-${crypto.randomUUID()}`
+function buildDoctorVisitId() {
+  return `DV-${crypto.randomUUID()}`
 }
 
-function buildTestRequestId() {
-  return `TR-${crypto.randomUUID()}`
+function buildLabBatchId() {
+  return `LB-${crypto.randomUUID()}`
 }
 
-function buildTestItemId() {
-  return `TI-${crypto.randomUUID()}`
+function buildLabItemId() {
+  return `LI-${crypto.randomUUID()}`
 }
 
-function createTestsReadyNotification(
-  notifications: WorkspaceNotification[],
-  patient: Patient,
-  request: PatientTestRequest,
-  timestamp: string,
-) {
-  const existingNotification = notifications.find((notification) => notification.id === request.notificationId)
-
-  if (existingNotification) {
-    existingNotification.createdAt = timestamp
-    existingNotification.message = `${patient.name} has completed all requested tests and can be sent back to ${request.returnSpecialty}.`
-    existingNotification.readAt = null
-    existingNotification.title = 'Tests ready'
-    return existingNotification.id
+function buildGuidanceKey(patient: Patient | null) {
+  if (!patient) {
+    return null
   }
 
-  const notificationId = buildNotificationId()
+  const next = getNextActionableCandidate(patient)
+
+  if (!next) {
+    return null
+  }
+
+  return `${next.id}:${next.title}:${next.code}`
+}
+
+function maybeCreateGuidanceNotification(
+  notifications: WorkspaceNotification[],
+  beforePatient: Patient | null,
+  afterPatient: Patient,
+  timestamp: string,
+) {
+  const beforeKey = buildGuidanceKey(beforePatient)
+  const afterCandidate = getNextActionableCandidate(afterPatient)
+  const afterKey = buildGuidanceKey(afterPatient)
+
+  if (!afterCandidate || beforeKey === afterKey) {
+    return
+  }
 
   notifications.unshift({
-    action: {
-      patientId: patient.id,
-      requestId: request.id,
-      type: 'send_back_to_doctor',
-    },
+    agendaEntryId: afterCandidate.id,
     createdAt: timestamp,
-    id: notificationId,
-    message: `${patient.name} has completed all requested tests and can be sent back to ${request.returnSpecialty}.`,
-    patientId: patient.id,
+    id: buildNotificationId(),
+    message: `${afterPatient.name} should go next to ${afterCandidate.title} with ${afterCandidate.code.toLowerCase()} code.`,
+    patientId: afterPatient.id,
     readAt: null,
     targetDoctorId: null,
     targetRole: 'nurse',
-    title: 'Tests ready',
-    type: 'tests_ready',
+    title: 'Guide patient',
+    type: 'patient_guidance',
   })
-
-  return notificationId
 }
 
 function maybeCreateDoctorQueueNotification(
   notifications: WorkspaceNotification[],
+  doctors: DoctorProfile[],
   patients: Patient[],
   doctorId: string | null,
   patient: Patient,
-  specialty: string,
+  title: string,
   timestamp: string,
-  excludedTaskId?: string,
+  kind: 'doctor' | 'lab',
 ) {
   if (!doctorId) {
     return
   }
 
-  const currentLoad = getDoctorTaskLoadExcludingTask(patients, doctorId, excludedTaskId)
+  const targetDoctor = doctors.find((doctor) => doctor.id === doctorId)
+
+  if (!targetDoctor) {
+    return
+  }
+
+  const currentLoad = targetDoctor.isTester
+    ? getLabQueueCount(patients, doctorId)
+    : getDoctorQueueLoad(patients, doctorId)
 
   if (currentLoad !== 0) {
     return
   }
 
   notifications.unshift({
-    action: null,
+    agendaEntryId: null,
     createdAt: timestamp,
     id: buildNotificationId(),
-    message: `${patient.name} was added to your ${specialty} queue.`,
+    message:
+      kind === 'lab'
+        ? `${patient.name} was added to your ${title} lab queue.`
+        : `${patient.name} was added to your ${title} queue.`,
     patientId: patient.id,
     readAt: null,
     targetDoctorId: doctorId,
     targetRole: 'doctor',
-    title: 'New patient',
+    title: kind === 'lab' ? 'New lab item' : 'New patient',
     type: 'doctor_queue',
   })
 }
@@ -585,7 +674,7 @@ function getCatalogTestOrThrow(testName: string) {
   const match = getTestCatalog().find((option) => normalizeValue(option.label) === normalizeValue(testName))
 
   if (!match?.testerSpecialty) {
-    throw new Error(`Unknown test: ${testName}.`)
+    throw new Error(`Unknown lab item: ${testName}.`)
   }
 
   return match as CatalogOption & { testerSpecialty: string }
@@ -606,7 +695,7 @@ async function loadSnapshot(options?: {
   const snapshot: HospitalSnapshot = {
     doctors: resolveDoctors(options?.runtimeDoctors, options?.activeUser ?? null),
     notifications: store.notifications.map(cloneNotification),
-    patients: corePatients.map((core) => mergePatient(core, getPatientOverlay(store, core.id).tasks)),
+    patients: corePatients.map((core) => mergePatient(core, getPatientOverlay(store, core.id).agenda)),
   }
 
   reconcileAssignments(snapshot.doctors, snapshot.patients)
@@ -634,21 +723,14 @@ function buildMutationResult(
   }
 }
 
+function persistPatient(patient: Patient) {
+  patient.overlay.agenda = patient.agenda.map(cloneAgendaEntry)
+  patient.lastUpdatedAt = getLastUpdatedAt(patient.core, patient.agenda)
+}
+
 export async function getHospitalSnapshot(activeUser: AuthUser | null): Promise<HospitalSnapshot> {
   return loadSnapshot({
     activeUser,
-  })
-}
-
-export async function ensureDoctorProfile(
-  _currentPatients: Patient[],
-  currentDoctors: DoctorProfile[],
-  _currentNotifications: WorkspaceNotification[],
-  activeUser: AuthUser,
-) {
-  return loadSnapshot({
-    activeUser,
-    runtimeDoctors: currentDoctors,
   })
 }
 
@@ -711,7 +793,6 @@ export function subscribeToHospitalStream(
   eventSource.addEventListener('patient:check-in', handleStreamEvent)
   eventSource.addEventListener('patient:update', handleStreamEvent)
   eventSource.addEventListener('patient:check-out', handleStreamEvent)
-
   eventSource.onerror = () => {
     void refreshSnapshot()
   }
@@ -734,13 +815,14 @@ export async function createPatient(
 ) {
   validatePatientName(input.name)
   validatePhoneNumber(input.phoneNumber)
-  validateTriageState(input.triageState)
-  validateTaskDrafts(input.initialTasks)
+  validateCode(input.defaultCode)
+  validateCode(input.firstAssignmentCode)
+  ensureFilled(input.firstSpecialty, 'First doctor specialty')
 
   const createdPatient = await checkInPatient({
-    name: input.name,
-    phoneNumber: input.phoneNumber,
-    triageState: input.triageState,
+    name: input.name.trim(),
+    phoneNumber: input.phoneNumber.trim(),
+    triageState: toBackendCode(input.defaultCode),
   })
 
   if (input.notes.trim().length > 0) {
@@ -752,40 +834,40 @@ export async function createPatient(
   })
   const patient = findPatientOrThrow(snapshot.patients, createdPatient.id)
   const timestamp = new Date().toISOString()
-  const actorLabel = getActorLabel(actor, snapshot.doctors)
+  const assignedDoctorId = chooseBestDoctorId(input.firstSpecialty, snapshot.doctors, snapshot.patients)
 
-  input.initialTasks.forEach((taskDraft) => {
-    const assignedDoctorId = chooseBestDoctorId(taskDraft.specialty, snapshot.doctors, snapshot.patients)
+  maybeCreateDoctorQueueNotification(
+    snapshot.notifications,
+    snapshot.doctors,
+    snapshot.patients,
+    assignedDoctorId,
+    patient,
+    input.firstSpecialty.trim(),
+    timestamp,
+    'doctor',
+  )
 
-    maybeCreateDoctorQueueNotification(
-      snapshot.notifications,
-      snapshot.patients,
-      assignedDoctorId,
-      patient,
-      taskDraft.specialty.trim(),
-      timestamp,
-    )
-
-    patient.tasks.push({
-      assignedDoctorId,
-      completedAt: null,
-      createdAt: timestamp,
-      id: buildDoctorTaskId(),
-      note: '',
-      queueOrder: 0,
-      requestedByLabel: actorLabel,
-      sourceTaskId: null,
-      specialty: taskDraft.specialty.trim(),
-      status: 'queued',
-      triageState: patient.triageState,
-      type: 'doctor_task',
-      updatedAt: timestamp,
-    })
+  patient.agenda.push({
+    assignedDoctorId,
+    blockedByBatchId: null,
+    code: input.firstAssignmentCode,
+    completedAt: null,
+    createdAt: timestamp,
+    entryType: 'doctor_visit',
+    id: buildDoctorVisitId(),
+    isReturnVisit: false,
+    note: '',
+    queueOrder: 0,
+    requestedByLabel: getActorLabel(actor, snapshot.doctors),
+    sourceVisitId: null,
+    specialty: input.firstSpecialty.trim(),
+    status: 'queued',
+    updatedAt: timestamp,
   })
 
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
+  persistPatient(patient)
   reconcileAssignments(snapshot.doctors, snapshot.patients)
+  maybeCreateGuidanceNotification(snapshot.notifications, null, patient, timestamp)
   persistSnapshot(snapshot)
 
   const finalSnapshot = await loadSnapshot({
@@ -806,12 +888,12 @@ export async function updatePatientCore(
   void actor
   validatePatientName(input.name)
   validatePhoneNumber(input.phoneNumber)
-  validateTriageState(input.triageState)
+  validateCode(input.defaultCode)
 
   await patchPatient(patientId, {
-    name: input.name,
-    phoneNumber: input.phoneNumber,
-    triageState: input.triageState,
+    name: input.name.trim(),
+    phoneNumber: input.phoneNumber.trim(),
+    triageState: toBackendCode(input.defaultCode),
   })
 
   if (input.note.trim().length > 0) {
@@ -825,89 +907,156 @@ export async function updatePatientCore(
   return buildMutationResult(finalSnapshot, patientId)
 }
 
-export async function addDoctorTask(
-  _currentPatients: Patient[],
-  currentDoctors: DoctorProfile[],
-  _currentNotifications: WorkspaceNotification[],
-  patientId: string,
-  taskDraft: DoctorTaskDraft,
-  actor: PatientMutationActor,
-) {
-  ensureFilled(taskDraft.specialty, 'Specialty')
+function resolveSourceVisit(patient: Patient, input: AddAssignmentsInput, actor: PatientMutationActor) {
+  if (actor.role !== 'doctor' || actor.isTester) {
+    return null
+  }
 
-  const snapshot = await loadSnapshot({
-    runtimeDoctors: currentDoctors,
-  })
-  const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const timestamp = new Date().toISOString()
-  const assignedDoctorId = chooseBestDoctorId(taskDraft.specialty, snapshot.doctors, snapshot.patients)
+  if (input.sourceVisitId) {
+    return findDoctorVisitOrThrow(patient, input.sourceVisitId)
+  }
 
-  maybeCreateDoctorQueueNotification(
-    snapshot.notifications,
-    snapshot.patients,
-    assignedDoctorId,
-    patient,
-    taskDraft.specialty.trim(),
-    timestamp,
+  return (
+    getDoctorVisits(patient).find(
+      (visit) => visit.assignedDoctorId === actor.doctorId && visit.status === 'with_staff',
+    ) ??
+    getDoctorVisits(patient).find(
+      (visit) => visit.assignedDoctorId === actor.doctorId && visit.status !== 'done',
+    ) ??
+    null
   )
-
-  patient.tasks.push({
-    assignedDoctorId,
-    completedAt: null,
-    createdAt: timestamp,
-    id: buildDoctorTaskId(),
-    note: '',
-    queueOrder: 0,
-    requestedByLabel: getActorLabel(actor, snapshot.doctors),
-    sourceTaskId: null,
-    specialty: taskDraft.specialty.trim(),
-    status: 'queued',
-    triageState: patient.triageState,
-    type: 'doctor_task',
-    updatedAt: timestamp,
-  })
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
-  reconcileAssignments(snapshot.doctors, snapshot.patients)
-  persistSnapshot(snapshot)
-
-  return buildMutationResult(snapshot, patientId)
 }
 
-export async function updateDoctorTask(
+export async function addAssignments(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  taskId: string,
-  input: UpdateDoctorTaskInput,
+  input: AddAssignmentsInput,
+  actor: PatientMutationActor,
 ) {
-  ensureFilled(input.specialty, 'Specialty')
+  if (input.assignments.length === 0) {
+    throw new Error('Add at least one next step.')
+  }
+
+  input.assignments.forEach((draft) => {
+    ensureFilled(draft.label, draft.destinationKind === 'lab' ? 'Lab item' : 'Specialty')
+    validateCode(draft.code)
+  })
+
+  if ((actor.role === 'registry' || actor.role === 'nurse' || actor.isTester) && input.assignments.some((draft) => draft.destinationKind === 'lab')) {
+    throw new Error('Only non-tester doctors can assign lab items.')
+  }
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const task = findDoctorTaskOrThrow(patient, taskId)
+  const beforePatient = clonePatient(patient)
   const timestamp = new Date().toISOString()
+  const actorLabel = getActorLabel(actor, snapshot.doctors)
+  const sourceVisit = resolveSourceVisit(patient, input, actor)
+  const doctorDrafts = input.assignments.filter((draft) => draft.destinationKind === 'doctor')
+  const labDrafts = input.assignments.filter((draft) => draft.destinationKind === 'lab')
 
-  task.specialty = input.specialty.trim()
-  task.updatedAt = timestamp
-  task.assignedDoctorId = chooseBestDoctorId(task.specialty, snapshot.doctors, snapshot.patients, task.id)
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
+  if (labDrafts.length > 0) {
+    if (!sourceVisit || actor.role !== 'doctor' || actor.isTester || sourceVisit.assignedDoctorId !== actor.doctorId) {
+      throw new Error('Select one of your own doctor visits before ordering lab work.')
+    }
 
-  maybeCreateDoctorQueueNotification(
-    snapshot.notifications,
-    snapshot.patients,
-    task.assignedDoctorId,
-    patient,
-    task.specialty,
-    timestamp,
-    task.id,
-  )
+    sourceVisit.completedAt = timestamp
+    sourceVisit.status = 'done'
+    sourceVisit.updatedAt = timestamp
+  }
 
+  const blockingBatchId = labDrafts.length > 0 ? buildLabBatchId() : null
+
+  if (labDrafts.length > 0 && sourceVisit) {
+    const items: PatientLabItem[] = labDrafts.map((draft) => {
+      const catalogItem = getCatalogTestOrThrow(draft.label)
+      const assignedDoctorId = chooseBestTesterId(catalogItem.testerSpecialty, snapshot.doctors, snapshot.patients)
+
+      maybeCreateDoctorQueueNotification(
+        snapshot.notifications,
+        snapshot.doctors,
+        snapshot.patients,
+        assignedDoctorId,
+        patient,
+        catalogItem.label,
+        timestamp,
+        'lab',
+      )
+
+      return {
+        assignedDoctorId,
+        code: draft.code,
+        createdAt: timestamp,
+        id: buildLabItemId(),
+        queueOrder: 0,
+        status: 'queued',
+        takenAt: null,
+        takenByLabel: null,
+        testName: catalogItem.label,
+        testerSpecialty: catalogItem.testerSpecialty,
+        updatedAt: timestamp,
+      }
+    })
+
+    patient.agenda.push({
+      createdAt: timestamp,
+      entryType: 'lab_batch',
+      id: blockingBatchId!,
+      items,
+      note: input.note.trim(),
+      orderedByDoctorId: actor.doctorId ?? null,
+      orderedByLabel: actorLabel,
+      resultsReadyAt: null,
+      returnCode: sourceVisit.code,
+      returnCreatedAt: null,
+      returnDoctorId: sourceVisit.assignedDoctorId,
+      returnSpecialty: sourceVisit.specialty,
+      sourceVisitId: sourceVisit.id,
+      status: 'collecting',
+      updatedAt: timestamp,
+    })
+  }
+
+  doctorDrafts.forEach((draft) => {
+    const assignedDoctorId = chooseBestDoctorId(draft.label, snapshot.doctors, snapshot.patients)
+
+    maybeCreateDoctorQueueNotification(
+      snapshot.notifications,
+      snapshot.doctors,
+      snapshot.patients,
+      assignedDoctorId,
+      patient,
+      draft.label.trim(),
+      timestamp,
+      'doctor',
+    )
+
+    patient.agenda.push({
+      assignedDoctorId,
+      blockedByBatchId: blockingBatchId,
+      code: draft.code,
+      completedAt: null,
+      createdAt: timestamp,
+      entryType: 'doctor_visit',
+      id: buildDoctorVisitId(),
+      isReturnVisit: false,
+      note: '',
+      queueOrder: 0,
+      requestedByLabel: actorLabel,
+      sourceVisitId: sourceVisit?.id ?? null,
+      specialty: draft.label.trim(),
+      status: 'queued',
+      updatedAt: timestamp,
+    })
+  })
+
+  persistPatient(patient)
   reconcileAssignments(snapshot.doctors, snapshot.patients)
+  maybeCreateGuidanceNotification(snapshot.notifications, beforePatient, patient, timestamp)
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
@@ -923,7 +1072,7 @@ export async function addPatientNote(
 ) {
   void actor
   ensureFilled(noteText, 'Note')
-  await attachPatientNote(patientId, noteText)
+  await attachPatientNote(patientId, noteText.trim())
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
@@ -932,330 +1081,331 @@ export async function addPatientNote(
   return buildMutationResult(snapshot, patientId)
 }
 
-export async function startDoctorTask(
+export async function startDoctorVisit(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  taskId: string,
+  visitId: string,
   actor: PatientMutationActor,
 ) {
-  if (!actor.doctorId) {
-    throw new Error('Doctor actions require an assigned doctor profile.')
+  if (!actor.doctorId || actor.isTester) {
+    throw new Error('Only non-tester doctors can start doctor visits.')
   }
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const task = findDoctorTaskOrThrow(patient, taskId)
+  const visit = findDoctorVisitOrThrow(patient, visitId)
   const timestamp = new Date().toISOString()
 
-  if (task.assignedDoctorId !== actor.doctorId) {
-    throw new Error('This queue item is not assigned to the current doctor.')
+  if (visit.assignedDoctorId !== actor.doctorId) {
+    throw new Error('This visit is not assigned to the current doctor.')
   }
 
   snapshot.patients.forEach((candidatePatient) => {
-    getDoctorTasks(candidatePatient)
+    getDoctorVisits(candidatePatient)
       .filter(
-        (candidateTask) =>
-          candidateTask.assignedDoctorId === actor.doctorId &&
-          candidateTask.id !== task.id &&
-          candidateTask.status === 'with_doctor',
+        (candidateVisit) =>
+          candidateVisit.assignedDoctorId === actor.doctorId &&
+          candidateVisit.id !== visit.id &&
+          candidateVisit.status === 'with_staff',
       )
-      .forEach((candidateTask) => {
-        candidateTask.status = 'queued'
-        candidateTask.updatedAt = timestamp
+      .forEach((candidateVisit) => {
+        candidateVisit.status = 'queued'
+        candidateVisit.updatedAt = timestamp
       })
   })
 
-  task.status = 'with_doctor'
-  task.updatedAt = timestamp
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
-
+  visit.status = 'with_staff'
+  visit.updatedAt = timestamp
+  persistPatient(patient)
   rebalanceDoctorQueueForDoctor(snapshot.patients, actor.doctorId)
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
 }
 
-export async function markDoctorTaskNotHere(
+export async function markDoctorVisitNotHere(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  taskId: string,
+  visitId: string,
   actor: PatientMutationActor,
 ) {
-  if (!actor.doctorId) {
-    throw new Error('Doctor actions require an assigned doctor profile.')
+  if (!actor.doctorId || actor.isTester) {
+    throw new Error('Only non-tester doctors can update doctor visits.')
   }
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const task = findDoctorTaskOrThrow(patient, taskId)
+  const visit = findDoctorVisitOrThrow(patient, visitId)
   const timestamp = new Date().toISOString()
 
-  if (task.assignedDoctorId !== actor.doctorId || task.status === 'done' || task.status === 'with_doctor') {
-    throw new Error('Only queued doctor items can be marked as not here.')
+  if (visit.assignedDoctorId !== actor.doctorId || visit.status === 'done') {
+    throw new Error('Only active doctor visits can be marked as not here.')
   }
 
+  visit.status = 'not_here'
+  visit.updatedAt = timestamp
+  persistPatient(patient)
   rebalanceDoctorQueueForDoctor(snapshot.patients, actor.doctorId)
-
-  const queue = snapshot.patients
-    .flatMap((candidatePatient) =>
-      getDoctorTasks(candidatePatient).filter(
-        (candidateTask) =>
-          candidateTask.assignedDoctorId === actor.doctorId &&
-          candidateTask.status !== 'done' &&
-          candidateTask.status !== 'with_doctor',
-      ),
-    )
-    .sort((left, right) => left.queueOrder - right.queueOrder)
-
-  const queueIndex = queue.findIndex((candidateTask) => candidateTask.id === task.id)
-
-  if (queueIndex === -1) {
-    throw new Error('Queue details are unavailable right now.')
-  }
-
-  task.status = 'not_here'
-  task.updatedAt = timestamp
-
-  const nextTask = queue[queueIndex + 1]
-
-  if (nextTask) {
-    const previousQueueOrder = task.queueOrder
-    task.queueOrder = nextTask.queueOrder
-    nextTask.queueOrder = previousQueueOrder
-  }
-
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
 }
 
-export async function completeDoctorTask(
+export async function completeDoctorVisit(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  taskId: string,
+  visitId: string,
   actor: PatientMutationActor,
 ) {
-  if (!actor.doctorId) {
-    throw new Error('Doctor actions require an assigned doctor profile.')
+  if (!actor.doctorId || actor.isTester) {
+    throw new Error('Only non-tester doctors can complete doctor visits.')
   }
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const task = findDoctorTaskOrThrow(patient, taskId)
+  const beforePatient = clonePatient(patient)
+  const visit = findDoctorVisitOrThrow(patient, visitId)
   const timestamp = new Date().toISOString()
 
-  if (task.assignedDoctorId !== actor.doctorId) {
-    throw new Error('This queue item is not assigned to the current doctor.')
+  if (visit.assignedDoctorId !== actor.doctorId) {
+    throw new Error('This visit is not assigned to the current doctor.')
   }
 
-  task.completedAt = timestamp
-  task.status = 'done'
-  task.updatedAt = timestamp
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
+  visit.completedAt = timestamp
+  visit.status = 'done'
+  visit.updatedAt = timestamp
+  persistPatient(patient)
 
-  if (task.assignedDoctorId) {
-    rebalanceDoctorQueueForDoctor(snapshot.patients, task.assignedDoctorId)
+  if (visit.assignedDoctorId) {
+    rebalanceDoctorQueueForDoctor(snapshot.patients, visit.assignedDoctorId)
   }
 
+  maybeCreateGuidanceNotification(snapshot.notifications, beforePatient, patient, timestamp)
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
 }
 
-export async function createTestRequest(
+export async function startLabItem(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  sourceTaskId: string,
-  input: CreateTestRequestInput,
+  batchId: string,
+  itemId: string,
   actor: PatientMutationActor,
 ) {
-  if (!actor.doctorId) {
-    throw new Error('Doctor actions require an assigned doctor profile.')
-  }
-
-  const uniqueTests = [...new Set(input.tests.map((value) => value.trim()).filter(Boolean))]
-
-  if (uniqueTests.length === 0) {
-    throw new Error('Choose at least one test.')
+  if (!actor.doctorId || !actor.isTester) {
+    throw new Error('Only tester users can start lab items.')
   }
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const sourceTask = findDoctorTaskOrThrow(patient, sourceTaskId)
+  const batch = findLabBatchOrThrow(patient, batchId)
+  const item = findLabItemOrThrow(batch, itemId)
   const timestamp = new Date().toISOString()
 
-  if (sourceTask.assignedDoctorId !== actor.doctorId) {
-    throw new Error('Only the assigned doctor can order tests for this queue item.')
+  if (item.assignedDoctorId !== actor.doctorId) {
+    throw new Error('This lab item is not assigned to the current tester.')
   }
 
-  const items: PatientTestItem[] = uniqueTests.map((testName) => {
-    const catalogTest = getCatalogTestOrThrow(testName)
-
-    return {
-      assignedDoctorId: chooseBestTesterDoctorId(catalogTest.testerSpecialty, snapshot.doctors, snapshot.patients),
-      completedAt: null,
-      completedByLabel: null,
-      createdAt: timestamp,
-      id: buildTestItemId(),
-      status: 'pending',
-      testName: catalogTest.label,
-      testerSpecialty: catalogTest.testerSpecialty,
-      updatedAt: timestamp,
-    }
+  snapshot.patients.forEach((candidatePatient) => {
+    getLabBatches(candidatePatient).forEach((candidateBatch) => {
+      candidateBatch.items
+        .filter(
+          (candidateItem) =>
+            candidateItem.assignedDoctorId === actor.doctorId &&
+            candidateItem.id !== item.id &&
+            candidateItem.status === 'with_staff',
+        )
+        .forEach((candidateItem) => {
+          candidateItem.status = 'queued'
+          candidateItem.updatedAt = timestamp
+        })
+    })
   })
 
-  patient.tasks.push({
-    createdAt: timestamp,
-    id: buildTestRequestId(),
-    items,
-    note: input.note.trim(),
-    notificationId: null,
-    orderedByDoctorId: actor.doctorId,
-    orderedByLabel: getActorLabel(actor, snapshot.doctors),
-    returnDoctorId: sourceTask.assignedDoctorId,
-    returnSpecialty: sourceTask.specialty,
-    returnedAt: null,
-    sourceTaskId: sourceTask.id,
-    status: 'pending',
-    triageState: patient.triageState,
-    type: 'test_request',
-    updatedAt: timestamp,
-  })
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
+  item.status = 'with_staff'
+  item.updatedAt = timestamp
+  batch.updatedAt = timestamp
+  persistPatient(patient)
+  rebalanceLabQueueForDoctor(snapshot.patients, actor.doctorId)
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
 }
 
-export async function markTestItemDone(
+export async function markLabItemNotHere(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  requestId: string,
-  testItemId: string,
+  batchId: string,
+  itemId: string,
   actor: PatientMutationActor,
 ) {
+  if (!actor.doctorId || !actor.isTester) {
+    throw new Error('Only tester users can update lab items.')
+  }
+
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const request = findTestRequestOrThrow(patient, requestId)
-  const testItem = findTestItemOrThrow(request, testItemId)
+  const batch = findLabBatchOrThrow(patient, batchId)
+  const item = findLabItemOrThrow(batch, itemId)
   const timestamp = new Date().toISOString()
 
-  if (testItem.status === 'done') {
+  if (item.assignedDoctorId !== actor.doctorId || item.status === 'taken') {
+    throw new Error('Only active lab items can be marked as not here.')
+  }
+
+  item.status = 'not_here'
+  item.updatedAt = timestamp
+  batch.updatedAt = timestamp
+  persistPatient(patient)
+  rebalanceLabQueueForDoctor(snapshot.patients, actor.doctorId)
+  persistSnapshot(snapshot)
+
+  return buildMutationResult(snapshot, patientId)
+}
+
+export async function markLabItemTaken(
+  _currentPatients: Patient[],
+  currentDoctors: DoctorProfile[],
+  _currentNotifications: WorkspaceNotification[],
+  patientId: string,
+  batchId: string,
+  itemId: string,
+  actor: PatientMutationActor,
+) {
+  if (!actor.doctorId || !actor.isTester) {
+    throw new Error('Only tester users can complete lab items.')
+  }
+
+  const snapshot = await loadSnapshot({
+    runtimeDoctors: currentDoctors,
+  })
+  const patient = findPatientOrThrow(snapshot.patients, patientId)
+  const beforePatient = clonePatient(patient)
+  const batch = findLabBatchOrThrow(patient, batchId)
+  const item = findLabItemOrThrow(batch, itemId)
+  const timestamp = new Date().toISOString()
+
+  if (item.assignedDoctorId !== actor.doctorId) {
+    throw new Error('This lab item is not assigned to the current tester.')
+  }
+
+  if (item.status === 'taken') {
     return buildMutationResult(snapshot, patientId)
   }
 
-  testItem.completedAt = timestamp
-  testItem.completedByLabel = getActorLabel(actor, snapshot.doctors)
-  testItem.status = 'done'
-  testItem.updatedAt = timestamp
-  request.updatedAt = timestamp
+  item.status = 'taken'
+  item.takenAt = timestamp
+  item.takenByLabel = getActorLabel(actor, snapshot.doctors)
+  item.updatedAt = timestamp
+  batch.updatedAt = timestamp
 
-  if (request.items.every((item) => item.status === 'done')) {
-    request.status = 'ready_for_return'
-    request.notificationId = createTestsReadyNotification(snapshot.notifications, patient, request, timestamp)
+  if (batch.items.every((candidate) => candidate.status === 'taken')) {
+    batch.status = 'waiting_results'
   }
 
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
+  persistPatient(patient)
+
+  if (item.assignedDoctorId) {
+    rebalanceLabQueueForDoctor(snapshot.patients, item.assignedDoctorId)
+  }
+
+  maybeCreateGuidanceNotification(snapshot.notifications, beforePatient, patient, timestamp)
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
 }
 
-export async function sendPatientBackToDoctor(
+export async function markLabResultsReady(
   _currentPatients: Patient[],
   currentDoctors: DoctorProfile[],
   _currentNotifications: WorkspaceNotification[],
   patientId: string,
-  requestId: string,
+  batchId: string,
   actor: PatientMutationActor,
 ) {
-  if (actor.role !== 'nurse') {
-    throw new Error('Only nurses can send patients back to the ordering doctor.')
+  if (!actor.doctorId || !actor.isTester) {
+    throw new Error('Only tester users can release lab results.')
   }
 
   const snapshot = await loadSnapshot({
     runtimeDoctors: currentDoctors,
   })
   const patient = findPatientOrThrow(snapshot.patients, patientId)
-  const request = findTestRequestOrThrow(patient, requestId)
+  const beforePatient = clonePatient(patient)
+  const batch = findLabBatchOrThrow(patient, batchId)
   const timestamp = new Date().toISOString()
 
-  if (request.status !== 'ready_for_return') {
-    throw new Error('The patient cannot be sent back yet.')
+  if (!batch.items.some((item) => item.assignedDoctorId === actor.doctorId)) {
+    throw new Error('This lab batch is not assigned to the current tester.')
+  }
+
+  if (batch.status !== 'waiting_results') {
+    throw new Error('All lab items must be taken before results can be released.')
   }
 
   const assignedDoctorId =
-    request.returnDoctorId && snapshot.doctors.some((doctor) => doctor.id === request.returnDoctorId)
-      ? request.returnDoctorId
-      : chooseBestDoctorId(request.returnSpecialty, snapshot.doctors, snapshot.patients)
+    batch.returnDoctorId && snapshot.doctors.some((doctor) => doctor.id === batch.returnDoctorId && !doctor.isTester)
+      ? batch.returnDoctorId
+      : chooseBestDoctorId(batch.returnSpecialty, snapshot.doctors, snapshot.patients)
 
   maybeCreateDoctorQueueNotification(
     snapshot.notifications,
+    snapshot.doctors,
     snapshot.patients,
     assignedDoctorId,
     patient,
-    request.returnSpecialty,
+    batch.returnSpecialty,
     timestamp,
+    'doctor',
   )
 
-  patient.tasks.push({
+  patient.agenda.push({
     assignedDoctorId,
+    blockedByBatchId: null,
+    code: batch.returnCode,
     completedAt: null,
     createdAt: timestamp,
-    id: buildDoctorTaskId(),
-    note: 'Returned after completed tests.',
+    entryType: 'doctor_visit',
+    id: buildDoctorVisitId(),
+    isReturnVisit: true,
+    note: 'Return visit after lab results.',
     queueOrder: 0,
-    requestedByLabel: 'Nurse station',
-    sourceTaskId: request.sourceTaskId,
-    specialty: request.returnSpecialty,
+    requestedByLabel: 'Lab results',
+    sourceVisitId: batch.sourceVisitId,
+    specialty: batch.returnSpecialty,
     status: 'queued',
-    triageState: patient.triageState,
-    type: 'return_to_doctor_task',
     updatedAt: timestamp,
   })
 
-  request.returnDoctorId = assignedDoctorId
-  request.returnedAt = timestamp
-  request.status = 'returned'
-  request.updatedAt = timestamp
-  patient.overlay.tasks = patient.tasks.map(cloneTask)
-  patient.lastUpdatedAt = timestamp
-
-  if (request.notificationId) {
-    const notification = snapshot.notifications.find((candidate) => candidate.id === request.notificationId)
-
-    if (notification) {
-      notification.readAt = timestamp
-    }
-  }
-
+  batch.resultsReadyAt = timestamp
+  batch.returnCreatedAt = timestamp
+  batch.returnDoctorId = assignedDoctorId
+  batch.status = 'return_created'
+  batch.updatedAt = timestamp
+  persistPatient(patient)
   reconcileAssignments(snapshot.doctors, snapshot.patients)
+  maybeCreateGuidanceNotification(snapshot.notifications, beforePatient, patient, timestamp)
   persistSnapshot(snapshot)
 
   return buildMutationResult(snapshot, patientId)
@@ -1273,7 +1423,7 @@ export async function checkoutPatient(
   const patient = findPatientOrThrow(snapshotBeforeDeletion.patients, patientId)
 
   if (!canCheckoutPatient(patient)) {
-    throw new Error('Patient still has active doctor or test work.')
+    throw new Error('Patient still has active doctor or lab work.')
   }
 
   await deletePatient(patientId)
@@ -1350,42 +1500,8 @@ export function getVisibleNotifications(
   })
 }
 
-export function getPatientDoctorLabel(doctors: DoctorProfile[], patient: Patient) {
-  const currentTask =
-    getDoctorTasks(patient).find((task) => task.status === 'with_doctor') ??
-    getDoctorTasks(patient)
-      .filter((task) => task.status !== 'done')
-      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())[0] ??
-    null
-
-  return getDoctorLabelById(doctors, currentTask?.assignedDoctorId ?? null)
-}
-
-export function getPatientReadyReturnCount(patient: Patient) {
-  return getReadyReturnRequests(patient).length
-}
-
-export function getPatientPendingTestCount(patient: Patient) {
-  return getPendingTestItems(patient).length
-}
-
-export function getPatientOpenTaskCount(patient: Patient) {
-  return getDoctorTasks(patient).filter((task) => task.status !== 'done').length
-}
-
-export function getDoctorQueueCount(patients: Patient[], doctorId: string) {
-  return patients.reduce((count, patient) => {
-    if (patient.checkedOutAt) {
-      return count
-    }
-
-    return (
-      count +
-      getDoctorTasks(patient).filter(
-        (task) => task.assignedDoctorId === doctorId && task.status !== 'done',
-      ).length
-    )
-  }, 0)
+export function buildUnifiedAssignmentCatalog(doctors: DoctorProfile[]) {
+  return [...buildSpecialtyCatalog(doctors), ...getTestCatalog()]
 }
 
 export { buildSpecialtyCatalog, getTestCatalog }

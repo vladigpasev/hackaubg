@@ -1,21 +1,27 @@
-export type TriageState = 'GREEN' | 'YELLOW' | 'RED'
+export type BackendTriageState = 'GREEN' | 'YELLOW' | 'RED'
 
-export type DoctorTaskStatus = 'queued' | 'with_doctor' | 'not_here' | 'done'
+export type PatientCode = 'GREEN' | 'YELLOW' | 'UNDEFINED'
 
-export type TestRequestStatus = 'pending' | 'ready_for_return' | 'returned'
+export type AssignmentCode = 'GREEN' | 'YELLOW'
+
+export type DoctorVisitStatus = 'queued' | 'with_staff' | 'not_here' | 'done'
+
+export type LabItemStatus = 'queued' | 'with_staff' | 'not_here' | 'taken'
+
+export type LabBatchStatus = 'collecting' | 'waiting_results' | 'results_ready' | 'return_created'
 
 export interface BackendPatientCore {
   id: string
   name: string
   phoneNumber: string
-  triageState: TriageState
+  triageState: BackendTriageState
   admittedAt: string
   notes: string[]
 }
 
 export interface BackendQueueRecord {
   timestamp: string
-  triageState: TriageState
+  triageState: BackendTriageState
   specialty: string
   referredById: string
 }
@@ -23,7 +29,7 @@ export interface BackendQueueRecord {
 export interface BackendHistoryRecord {
   referredById: string
   specialty: string
-  triageState: TriageState
+  triageState: BackendTriageState
   referredToId: string
   isDone: boolean
   timestamp: string
@@ -42,66 +48,70 @@ export interface PatientNote {
   text: string
 }
 
-export interface PatientDoctorTask {
+export interface PatientDoctorVisit {
   id: string
-  type: 'doctor_task' | 'return_to_doctor_task'
+  entryType: 'doctor_visit'
   specialty: string
   assignedDoctorId: string | null
-  triageState: TriageState
-  status: DoctorTaskStatus
+  code: AssignmentCode
+  status: DoctorVisitStatus
   requestedByLabel: string
   note: string
   createdAt: string
   updatedAt: string
   completedAt: string | null
-  sourceTaskId: string | null
+  sourceVisitId: string | null
+  blockedByBatchId: string | null
+  isReturnVisit: boolean
   queueOrder: number
 }
 
-export interface PatientTestItem {
+export interface PatientLabItem {
   id: string
   testName: string
   testerSpecialty: string
   assignedDoctorId: string | null
-  status: 'pending' | 'done'
+  code: AssignmentCode
+  status: LabItemStatus
   createdAt: string
   updatedAt: string
-  completedAt: string | null
-  completedByLabel: string | null
+  takenAt: string | null
+  takenByLabel: string | null
+  queueOrder: number
 }
 
-export interface PatientTestRequest {
+export interface PatientLabBatch {
   id: string
-  type: 'test_request'
-  triageState: TriageState
+  entryType: 'lab_batch'
+  status: LabBatchStatus
   orderedByDoctorId: string | null
   orderedByLabel: string
-  sourceTaskId: string | null
   returnDoctorId: string | null
   returnSpecialty: string
+  returnCode: AssignmentCode
   note: string
   createdAt: string
   updatedAt: string
-  status: TestRequestStatus
-  items: PatientTestItem[]
-  notificationId: string | null
-  returnedAt: string | null
+  resultsReadyAt: string | null
+  returnCreatedAt: string | null
+  sourceVisitId: string
+  items: PatientLabItem[]
 }
 
-export type PatientTask = PatientDoctorTask | PatientTestRequest
+export type PatientAgendaEntry = PatientDoctorVisit | PatientLabBatch
 
 export interface HybridPatientOverlay {
-  tasks: PatientTask[]
+  agenda: PatientAgendaEntry[]
 }
 
 export interface PatientViewModel {
   id: string
   name: string
   phoneNumber: string
-  triageState: TriageState
+  defaultCode: AssignmentCode
   admittedAt: string
   notes: PatientNote[]
-  tasks: PatientTask[]
+  agenda: PatientAgendaEntry[]
   checkedOutAt: string | null
   core: BackendPatientCore
   detail: BackendPatientDetails | null
@@ -121,28 +131,23 @@ export interface DoctorProfile {
 
 export interface CatalogOption {
   id: string
+  kind: 'doctor' | 'lab'
   label: string
   keywords: string[]
   testerSpecialty?: string
-}
-
-export interface NotificationAction {
-  patientId: string
-  requestId: string
-  type: 'send_back_to_doctor'
 }
 
 export interface WorkspaceNotification {
   id: string
   targetRole: 'doctor' | 'nurse'
   targetDoctorId: string | null
-  type: 'doctor_queue' | 'tests_ready'
+  type: 'doctor_queue' | 'patient_guidance'
   title: string
   message: string
   createdAt: string
   readAt: string | null
   patientId: string | null
-  action: NotificationAction | null
+  agendaEntryId: string | null
 }
 
 export interface HospitalSnapshot {
@@ -151,43 +156,38 @@ export interface HospitalSnapshot {
   patients: Patient[]
 }
 
-export interface DoctorTaskDraft {
-  specialty: string
-}
-
-export interface QueueDraftItem {
-  id: string
-  kind: 'specialty' | 'test'
-  label: string
-  triageState: TriageState
-}
-
 export interface CheckInPatientInput {
-  initialTasks: DoctorTaskDraft[]
   name: string
   notes: string
   phoneNumber: string
-  triageState: TriageState
+  defaultCode: AssignmentCode
+  firstAssignmentCode: AssignmentCode
+  firstSpecialty: string
 }
 
 export interface UpdatePatientCoreInput {
   name: string
   note: string
   phoneNumber: string
-  triageState: TriageState
+  defaultCode: AssignmentCode
 }
 
-export interface UpdateDoctorTaskInput {
-  specialty: string
+export interface AssignmentDraft {
+  id: string
+  destinationKind: 'doctor' | 'lab'
+  label: string
+  code: AssignmentCode
 }
 
-export interface CreateTestRequestInput {
+export interface AddAssignmentsInput {
+  assignments: AssignmentDraft[]
   note: string
-  tests: string[]
+  sourceVisitId?: string | null
 }
 
 export interface PatientMutationActor {
   doctorId?: string | null
+  isTester?: boolean
   role: 'doctor' | 'nurse' | 'registry'
   username: string
 }

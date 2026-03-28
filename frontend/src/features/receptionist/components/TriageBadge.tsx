@@ -1,4 +1,4 @@
-import type { TriageState } from '../types/patient'
+import type { AssignmentCode, PatientCode } from '../types/patient'
 
 const triageStyles = {
   GREEN: {
@@ -6,10 +6,10 @@ const triageStyles = {
     iconLabel: 'G',
     label: 'Green',
   },
-  RED: {
-    badgeClassName: 'border-[var(--red-border)] bg-[var(--red-soft)] text-[var(--red-text)]',
-    iconLabel: 'R',
-    label: 'Red',
+  UNDEFINED: {
+    badgeClassName: 'border-[var(--border-soft)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]',
+    iconLabel: 'U',
+    label: 'Undefined',
   },
   YELLOW: {
     badgeClassName: 'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]',
@@ -19,7 +19,7 @@ const triageStyles = {
 } as const
 
 interface TriageBadgeProps {
-  triageState: TriageState
+  triageState: AssignmentCode | PatientCode
 }
 
 export function TriageBadge({ triageState }: TriageBadgeProps) {

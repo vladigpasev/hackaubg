@@ -1,10 +1,10 @@
 import type {
   HybridPatientOverlay,
-  PatientTask,
+  PatientAgendaEntry,
   WorkspaceNotification,
 } from '../types/patient'
 
-const OVERLAY_STORAGE_KEY = 'hackaubg.hospital.overlay.v1'
+const OVERLAY_STORAGE_KEY = 'hackaubg.hospital.overlay.v2'
 
 interface HospitalOverlayStore {
   notifications: WorkspaceNotification[]
@@ -22,12 +22,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function sanitizeTasks(tasks: unknown): PatientTask[] {
-  if (!Array.isArray(tasks)) {
+function sanitizeAgenda(agenda: unknown): PatientAgendaEntry[] {
+  if (!Array.isArray(agenda)) {
     return []
   }
 
-  return tasks.filter((task): task is PatientTask => isRecord(task) && typeof task.type === 'string') as PatientTask[]
+  return agenda.filter(
+    (entry): entry is PatientAgendaEntry =>
+      isRecord(entry) && typeof entry.entryType === 'string',
+  ) as PatientAgendaEntry[]
 }
 
 function sanitizeNotifications(notifications: unknown): WorkspaceNotification[] {
@@ -54,7 +57,7 @@ function sanitizeStore(value: unknown): HospitalOverlayStore {
     Object.entries(rawOverlays).map(([patientId, overlay]) => [
       patientId,
       {
-        tasks: sanitizeTasks(isRecord(overlay) ? overlay.tasks : []),
+        agenda: sanitizeAgenda(isRecord(overlay) ? overlay.agenda : []),
       } satisfies HybridPatientOverlay,
     ]),
   )
@@ -92,7 +95,7 @@ export function saveOverlayStore(store: HospitalOverlayStore) {
 }
 
 export function getPatientOverlay(store: HospitalOverlayStore, patientId: string): HybridPatientOverlay {
-  return store.patientOverlays[patientId] ?? { tasks: [] }
+  return store.patientOverlays[patientId] ?? { agenda: [] }
 }
 
 export function writePatientOverlay(
@@ -101,7 +104,7 @@ export function writePatientOverlay(
   overlay: HybridPatientOverlay,
 ) {
   store.patientOverlays[patientId] = {
-    tasks: [...overlay.tasks],
+    agenda: [...overlay.agenda],
   }
 }
 

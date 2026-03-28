@@ -3,7 +3,6 @@ import type {
   BackendPatientCore,
   BackendPatientDetails,
   BackendQueueRecord,
-  TriageState,
 } from '../types/patient'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:3000').replace(/\/+$/, '')
@@ -48,7 +47,7 @@ function toIsoString(value: unknown) {
   return value
 }
 
-function toTriageState(value: unknown): TriageState {
+function toTriageState(value: unknown): BackendPatientCore['triageState'] {
   if (value === 'GREEN' || value === 'YELLOW' || value === 'RED') {
     return value
   }
@@ -184,7 +183,7 @@ export async function getPatientDetails(patientId: string) {
 export async function checkInPatient(input: {
   name: string
   phoneNumber: string
-  triageState: TriageState
+  triageState: BackendPatientCore['triageState']
 }) {
   const response = await request<unknown>('/patient/check-in', {
     body: JSON.stringify({
@@ -203,7 +202,7 @@ export async function patchPatient(
   input: {
     name?: string
     phoneNumber?: string
-    triageState?: TriageState
+    triageState?: BackendPatientCore['triageState']
   },
 ) {
   const body: Record<string, string> = {}

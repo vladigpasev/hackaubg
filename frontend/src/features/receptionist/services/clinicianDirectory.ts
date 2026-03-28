@@ -33,52 +33,59 @@ const baseClinicians: DoctorProfile[] = [
 ]
 
 const specialtyCatalogSeed: CatalogOption[] = [
-  { id: 'sp-cardiology', keywords: ['cardio', 'heart'], label: 'Cardiology' },
-  { id: 'sp-icu', keywords: ['icu', 'critical care'], label: 'ICU' },
-  { id: 'sp-pulmonology', keywords: ['lungs', 'breathing'], label: 'Pulmonology' },
-  { id: 'sp-radiology', keywords: ['radiology', 'imaging', 'scanner'], label: 'Radiology' },
-  { id: 'sp-lab', keywords: ['lab', 'blood', 'analysis'], label: 'Laboratory Medicine' },
+  { id: 'sp-cardiology', kind: 'doctor', keywords: ['cardio', 'heart'], label: 'Cardiology' },
+  { id: 'sp-icu', kind: 'doctor', keywords: ['icu', 'critical care'], label: 'ICU' },
+  { id: 'sp-pulmonology', kind: 'doctor', keywords: ['lungs', 'breathing'], label: 'Pulmonology' },
+  { id: 'sp-radiology', kind: 'doctor', keywords: ['radiology', 'imaging', 'scanner'], label: 'Radiology' },
+  { id: 'sp-lab', kind: 'doctor', keywords: ['lab', 'blood', 'analysis'], label: 'Laboratory Medicine' },
 ]
 
 const testCatalogSeed: CatalogOption[] = [
   {
     id: 'test-blood',
+    kind: 'lab',
     keywords: ['bloodwork', 'cbc', 'blood'],
     label: 'Blood Test',
     testerSpecialty: 'Laboratory Medicine',
   },
   {
     id: 'test-ecg',
+    kind: 'lab',
     keywords: ['ecg', 'ekg', 'heart'],
     label: 'ECG',
     testerSpecialty: 'Laboratory Medicine',
   },
   {
     id: 'test-urine',
+    kind: 'lab',
     keywords: ['urine', 'sample'],
     label: 'Urine Test',
     testerSpecialty: 'Laboratory Medicine',
   },
   {
     id: 'test-xray',
+    kind: 'lab',
     keywords: ['xray', 'x-ray', 'lungs'],
     label: 'Chest X-Ray',
     testerSpecialty: 'Radiology',
   },
   {
     id: 'test-ct',
+    kind: 'lab',
     keywords: ['ct', 'scan'],
     label: 'CT Scan',
     testerSpecialty: 'Radiology',
   },
   {
     id: 'test-mri',
+    kind: 'lab',
     keywords: ['mri', 'scan'],
     label: 'MRI',
     testerSpecialty: 'Radiology',
   },
   {
     id: 'test-ultrasound',
+    kind: 'lab',
     keywords: ['ultrasound', 'echo'],
     label: 'Ultrasound',
     testerSpecialty: 'Radiology',
@@ -148,6 +155,7 @@ export function buildSpecialtyCatalog(doctors: DoctorProfile[]) {
       seenSpecialties.add(normalizedSpecialty)
       mergedCatalog.push({
         id: `sp-runtime-${normalizedSpecialty.replace(/[^a-z0-9]+/g, '-')}`,
+        kind: 'doctor',
         keywords: [],
         label: specialty,
       })
