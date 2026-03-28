@@ -4,6 +4,8 @@ import { ProtectedRoute } from './auth/ProtectedRoute'
 import { PublicOnlyRoute } from './auth/PublicOnlyRoute'
 import { LoginPage } from './pages/LoginPage'
 import { NursePage } from './pages/NursePage'
+import { PublicPatientDetailsPage } from './pages/PublicPatientDetailsPage'
+import { PublicPatientLookupPage } from './pages/PublicPatientLookupPage'
 import { RegistryPage } from './pages/RegistryPage'
 import { WorkspacePage } from './pages/WorkspacePage'
 
@@ -15,6 +17,8 @@ function App() {
       </Route>
 
       <Route path="/" element={<AuthHomeRedirect />} />
+      <Route path="/public/patient" element={<PublicPatientLookupPage />} />
+      <Route path="/public/patient/:phoneNumber" element={<PublicPatientDetailsPage />} />
 
       <Route element={<ProtectedRoute allowedRoles={['registry']} />}>
         <Route path="/registry" element={<RegistryPage />} />
