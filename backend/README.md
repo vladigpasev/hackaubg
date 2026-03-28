@@ -47,13 +47,14 @@ The backend sets an `HttpOnly` cookie named `hospital_auth`. The cookie expires 
 
 ## Demo Users
 
+`npm run seed` now creates a larger demo roster across `registry`, `nurse`, `doctor`, and tester accounts, plus active Redis-backed patient journeys. The seed command prints the full login list after it finishes.
+
+Starter accounts:
+
 - `registry.admissions` / `RegistryDemo!24`
 - `nurse.elena` / `NurseWard!24`
-- `nurse.martin` / `NurseShift!24`
 - `doctor.nikola` / `DoctorICU!24`
-- `doctor.petrova` / `DoctorCardio!24`
 - `tester.lab` / `TesterLab!24`
-- `tester.scan` / `TesterScan!24`
 
 ## Useful Commands
 

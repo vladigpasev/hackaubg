@@ -1,98 +1,55 @@
 import 'dotenv/config';
-import { hash } from 'bcryptjs';
-import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
-import { PrismaClient } from '../generated/prisma/client';
-import { getDatabaseUrl } from '../src/auth/auth.constants';
-
-const demoUsers = [
-  {
-    username: 'registry.admissions',
-    password: 'RegistryDemo!24',
-    role: 'registry',
-    isTester: false,
-    specialties: [],
-  },
-  {
-    username: 'nurse.elena',
-    password: 'NurseWard!24',
-    role: 'nurse',
-    isTester: false,
-    specialties: [],
-  },
-  {
-    username: 'nurse.martin',
-    password: 'NurseShift!24',
-    role: 'nurse',
-    isTester: false,
-    specialties: [],
-  },
-  {
-    username: 'doctor.nikola',
-    password: 'DoctorICU!24',
-    role: 'doctor',
-    isTester: false,
-    specialties: ['icu', 'pulmonology'],
-  },
-  {
-    username: 'doctor.petrova',
-    password: 'DoctorCardio!24',
-    role: 'doctor',
-    isTester: false,
-    specialties: ['cardiology'],
-  },
-  {
-    username: 'tester.lab',
-    password: 'TesterLab!24',
-    role: 'doctor',
-    isTester: true,
-    specialties: ['blood-test'],
-  },
-  {
-    username: 'tester.scan',
-    password: 'TesterScan!24',
-    role: 'doctor',
-    isTester: true,
-    specialties: ['imaging', 'scanner'],
-  },
-] as const;
-
-const adapter = new PrismaBetterSqlite3({
-  url: getDatabaseUrl(),
-});
-
-const prisma = new PrismaClient({ adapter });
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from '../src/app.module';
+import { PatientService } from '../src/patient/patient.service';
+import { PrismaService } from '../src/service/prisma.service';
+import { RedisService } from '../src/service/redis.service';
+import { HospitalSeedRunner } from './seed/hospital.seed';
 
 async function main() {
-  for (const user of demoUsers) {
-    const passwordHash = await hash(user.password, 12);
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    logger: ['error', 'warn'],
+  });
 
-    await prisma.user.upsert({
-      where: { username: user.username },
-      update: {
-        passwordHash,
-        role: user.role,
-        isTester: user.isTester,
-        specialties: JSON.stringify(user.specialties),
-      },
-      create: {
-        username: user.username,
-        passwordHash,
-        role: user.role,
-        isTester: user.isTester,
-        specialties: JSON.stringify(user.specialties),
-      },
-    });
+  try {
+    const prisma = app.get(PrismaService);
+    const patientService = app.get(PatientService);
+    const redisService = app.get(RedisService);
+    const runner = new HospitalSeedRunner(prisma, patientService, redisService);
+    const summary = await runner.run();
+
+    console.log(
+      [
+        `Seeded ${summary.users.length} staff accounts.`,
+        `Seeded ${summary.patients.length} active patients with live hospital journeys.`,
+      ].join(' '),
+    );
+    console.log('Demo logins:');
+
+    for (const user of summary.users) {
+      const flags = [
+        user.role,
+        user.isTester ? 'tester' : null,
+        user.specialties?.length ? user.specialties.join(', ') : null,
+      ].filter((value): value is string => Boolean(value));
+
+      console.log(`- ${user.username} / ${user.password} (${flags.join(' | ')})`);
+    }
+
+    console.log('Seeded patient scenarios:');
+
+    for (const patient of summary.patients) {
+      console.log(
+        `- ${patient.name} [${patient.triage_state}] history=${patient.historyCount} queue=${patient.queueCount}`,
+      );
+    }
+  } finally {
+    await app.close();
   }
-
-  console.log(`Seeded ${demoUsers.length} demo users.`);
 }
 
-main()
-  .catch((error) => {
-    console.error('Failed to seed demo users.');
-    console.error(error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+main().catch((error: unknown) => {
+  console.error('Failed to seed hospital demo data.');
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -368,6 +368,35 @@ export class PatientService {
     private readonly streamService: StreamService,
   ) {}
 
+  async getPatientDetailsByPhoneNumber(
+    phoneNumber: string,
+  ): Promise<PatientDetailsResponseI> {
+    const client = this.redisService.client;
+    const normalizedPhoneNumber = phoneNumber.trim();
+
+    if (!normalizedPhoneNumber) {
+      throw new NotFoundException('Patient phone number is required');
+    }
+
+    let patientId: string | null;
+
+    try {
+      patientId = await client.get(this.getPhoneLookupKey(normalizedPhoneNumber));
+    } catch {
+      throw new ServiceUnavailableException(
+        'Unable to retrieve patient details',
+      );
+    }
+
+    if (!patientId) {
+      throw new NotFoundException(
+        `Patient with phone number ${normalizedPhoneNumber} is not checked in`,
+      );
+    }
+
+    return this.getPatientDetails(patientId);
+  }
+
   async getAllPatients(): Promise<AllPatientsI> {
     const client = this.redisService.client;
 
@@ -616,49 +645,52 @@ export class PatientService {
       throw new Error('Invalid patient record format');
     }
 
-    const history = rawRecord.history;
-    if (Array.isArray(history)) {
-      history.map((entry) => {
-        if (!this.isObject(entry)) {
-          throw new Error('Invalid history record format');
-        }
+    const history = Array.isArray(rawRecord.history)
+      ? rawRecord.history.map((entry) => {
+          if (!this.isObject(entry)) {
+            throw new Error('Invalid history record format');
+          }
 
-        const timestamp =
-          typeof entry.timestamp === 'string'
-            ? new Date(entry.timestamp)
-            : entry.timestamp;
+          const timestamp =
+            typeof entry.timestamp === 'string'
+              ? new Date(entry.timestamp)
+              : entry.timestamp;
 
-        if (
-          typeof entry.reffered_by_id !== 'string' ||
-          typeof entry.specialty !== 'string' ||
-          typeof entry.triage_state !== 'string' ||
-          !TRIAGE_STATES.includes(
-            entry.triage_state as (typeof TRIAGE_STATES)[number],
-          ) ||
-          typeof entry.reffered_to_id !== 'string' ||
-          typeof entry.is_done !== 'boolean' ||
-          !(timestamp instanceof Date) ||
-          Number.isNaN(timestamp.getTime())
-        ) {
-          throw new Error('Invalid history record format');
-        }
+          if (
+            typeof entry.reffered_by_id !== 'string' ||
+            typeof entry.specialty !== 'string' ||
+            typeof entry.triage_state !== 'string' ||
+            !TRIAGE_STATES.includes(
+              entry.triage_state as (typeof TRIAGE_STATES)[number],
+            ) ||
+            typeof entry.reffered_to_id !== 'string' ||
+            typeof entry.is_done !== 'boolean' ||
+            !(timestamp instanceof Date) ||
+            Number.isNaN(timestamp.getTime())
+          ) {
+            throw new Error('Invalid history record format');
+          }
 
-        return entry;
-      });
-    }
+          return {
+            reffered_by_id: entry.reffered_by_id,
+            specialty: entry.specialty,
+            triage_state: entry.triage_state,
+            reffered_to_id: entry.reffered_to_id,
+            is_done: entry.is_done,
+            timestamp,
+          };
+        })
+      : [];
 
-    if (Array.isArray(queue)) {
-      queue = [];
-    }
+    const normalizedQueue = Array.isArray(queue) ? queue : [];
 
     const transformed = {
       ...rawRecord,
       history,
-      queue,
+      queue: normalizedQueue,
     } as FullPatientDataI;
 
     if (!this.isFullPatientData(transformed)) {
-      console.log('throws the check');
       throw new Error(
         'Transformed data does not match FullPatientDataI format',
       );
@@ -668,8 +700,6 @@ export class PatientService {
   }
 
   private isFullPatientData(value: unknown): value is FullPatientDataI {
-    console.log(value);
-
     if (!this.isObject(value)) {
       return false;
     }
