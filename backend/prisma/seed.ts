@@ -1,6 +1,6 @@
-import 'dotenv/config';
-import { hash } from 'bcryptjs';
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
+import { hash } from 'bcryptjs';
+import 'dotenv/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { getDatabaseUrl } from '../src/auth/auth.constants';
 
@@ -53,6 +53,13 @@ const demoUsers = [
     role: 'doctor',
     isTester: true,
     specialties: ['imaging', 'scanner'],
+  },
+  {
+    username: 'admin.ops',
+    password: 'AdminOps!24',
+    role: 'admin',
+    isTester: false,
+    specialties: [],
   },
 ] as const;
 

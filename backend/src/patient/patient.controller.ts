@@ -236,7 +236,7 @@ export class PatientController {
     return { archived: true };
   }
 
-  @Roles('registry', 'nurse', 'doctor') //TODO: Should be changed to the role of admin
+  @Roles('admin')
   @Get('archive/:dateTime')
   @ApiOperation({
     summary: 'Read archived records by date-time',
@@ -262,7 +262,10 @@ export class PatientController {
             type: 'object',
             properties: {
               username: { type: 'string', example: 'doctor.petrova' },
-              role: { type: 'string', enum: ['registry', 'nurse', 'doctor'] },
+              role: {
+                type: 'string',
+                enum: ['registry', 'nurse', 'doctor', 'admin'],
+              },
               isTester: { type: 'boolean', example: false },
               specialties: {
                 type: 'array',

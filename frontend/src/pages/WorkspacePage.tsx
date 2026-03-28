@@ -1,111 +1,145 @@
-import { formatRoleLabel } from '../auth/roles'
-import { useAuth } from '../auth/useAuth'
+import { formatRoleLabel } from "../auth/roles";
+import { useAuth } from "../auth/useAuth";
 
 const quickActions = [
   {
-    title: 'Start intake',
-    detail: 'Open a guided intake flow with large step controls and clear validation.',
-    tag: 'Recommended',
-    tone: 'primary',
+    title: "Start intake",
+    detail:
+      "Open a guided intake flow with large step controls and clear validation.",
+    tag: "Recommended",
+    tone: "primary",
   },
   {
-    title: 'Review alerts',
-    detail: 'Work through urgent items with explicit acknowledge and escalate actions.',
-    tag: 'Action needed',
-    tone: 'warning',
+    title: "Review alerts",
+    detail:
+      "Work through urgent items with explicit acknowledge and escalate actions.",
+    tag: "Action needed",
+    tone: "warning",
   },
   {
-    title: 'Open worklist',
-    detail: 'Continue active cases from a roomy list instead of a dense dashboard.',
-    tag: 'In progress',
-    tone: 'neutral',
+    title: "Open worklist",
+    detail:
+      "Continue active cases from a roomy list instead of a dense dashboard.",
+    tag: "In progress",
+    tone: "neutral",
   },
-] as const
+] as const;
 
 const caseCards = [
   {
-    name: 'Mila Petrova',
-    id: 'PT-24018',
-    status: 'Critical',
-    statusTone: 'critical',
-    summary: 'Low oxygen saturation. Escalation path is visible before any secondary details.',
-    action: 'Open case',
+    name: "Mila Petrova",
+    id: "PT-24018",
+    status: "Critical",
+    statusTone: "critical",
+    summary:
+      "Low oxygen saturation. Escalation path is visible before any secondary details.",
+    action: "Open case",
   },
   {
-    name: 'Georgi Ivanov',
-    id: 'PT-24022',
-    status: 'Needs attention',
-    statusTone: 'warning',
-    summary: 'Waiting for reassessment. The next action stays obvious and close to the record.',
-    action: 'Review case',
+    name: "Georgi Ivanov",
+    id: "PT-24022",
+    status: "Needs attention",
+    statusTone: "warning",
+    summary:
+      "Waiting for reassessment. The next action stays obvious and close to the record.",
+    action: "Review case",
   },
   {
-    name: 'Elena Nikolova',
-    id: 'PT-24031',
-    status: 'Stable',
-    statusTone: 'stable',
-    summary: 'Ready for routine follow-up. Supporting context is available without competing for attention.',
-    action: 'Continue',
+    name: "Elena Nikolova",
+    id: "PT-24031",
+    status: "Stable",
+    statusTone: "stable",
+    summary:
+      "Ready for routine follow-up. Supporting context is available without competing for attention.",
+    action: "Continue",
   },
-] as const
+] as const;
 
 const principles = [
-  'Large primary controls are kept at or above 56px to reduce misclicks.',
-  'Color is paired with text and icons so severity never depends on color alone.',
-  'The page favors one dominant action path and avoids crowded multi-column data walls.',
-] as const
+  "Large primary controls are kept at or above 56px to reduce misclicks.",
+  "Color is paired with text and icons so severity never depends on color alone.",
+  "The page favors one dominant action path and avoids crowded multi-column data walls.",
+] as const;
 
 const statusLegend = [
-  { label: 'Critical', tone: 'critical', note: 'Urgent action with strongest contrast' },
-  { label: 'Needs attention', tone: 'warning', note: 'Important but not visually chaotic' },
-  { label: 'Stable', tone: 'stable', note: 'Calm success state with readable text' },
-] as const
+  {
+    label: "Critical",
+    tone: "critical",
+    note: "Urgent action with strongest contrast",
+  },
+  {
+    label: "Needs attention",
+    tone: "warning",
+    note: "Important but not visually chaotic",
+  },
+  {
+    label: "Stable",
+    tone: "stable",
+    note: "Calm success state with readable text",
+  },
+] as const;
 
 const actionToneClasses = {
   primary:
-    'border-[var(--teal-strong)] bg-[var(--teal)] text-white shadow-[0_18px_40px_rgba(15,143,138,0.22)] hover:bg-[var(--teal-strong)]',
+    "border-[var(--teal-strong)] bg-[var(--teal)] text-white shadow-[0_18px_40px_rgba(15,143,138,0.22)] hover:bg-[var(--teal-strong)]",
   warning:
-    'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)] hover:bg-[var(--amber-soft-strong)]',
+    "border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)] hover:bg-[var(--amber-soft-strong)]",
   neutral:
-    'border-[var(--border-soft)] bg-[var(--surface-secondary)] text-[var(--text-primary)] hover:bg-[var(--surface-secondary-strong)]',
-} as const
+    "border-[var(--border-soft)] bg-[var(--surface-secondary)] text-[var(--text-primary)] hover:bg-[var(--surface-secondary-strong)]",
+} as const;
 
 const statusToneClasses = {
-  critical: 'border-[var(--red-border)] bg-[var(--red-soft)] text-[var(--red-text)]',
-  warning: 'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]',
-  stable: 'border-[var(--green-border)] bg-[var(--green-soft)] text-[var(--green-text)]',
-} as const
+  critical:
+    "border-[var(--red-border)] bg-[var(--red-soft)] text-[var(--red-text)]",
+  warning:
+    "border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]",
+  stable:
+    "border-[var(--green-border)] bg-[var(--green-soft)] text-[var(--green-text)]",
+} as const;
 
 export function WorkspacePage() {
-  const { logout, user } = useAuth()
-  const activeUser = user!
-  const roleLabel = formatRoleLabel(activeUser.role)
+  const { logout, user } = useAuth();
+  const activeUser = user!;
+  const roleLabel = formatRoleLabel(activeUser.role);
   const roleContent = {
     registry: {
-      badge: 'Registry workspace',
-      title: 'A clear intake and handoff shell for registry staff.',
+      badge: "Registry workspace",
+      title: "A clear intake and handoff shell for registry staff.",
       description:
-        'This role-focused shell keeps admissions, transfer coordination, and the next safe action close together.',
-      primaryAction: 'Start intake',
+        "This role-focused shell keeps admissions, transfer coordination, and the next safe action close together.",
+      primaryAction: "Start intake",
     },
     nurse: {
-      badge: 'Nurse workspace',
-      title: 'A calm nursing workspace with clear priorities and minimal clutter.',
+      badge: "Nurse workspace",
+      title:
+        "A calm nursing workspace with clear priorities and minimal clutter.",
       description:
-        'The page favors handoff visibility, active task review, and fast access to the next patient-facing action.',
-      primaryAction: 'Open worklist',
+        "The page favors handoff visibility, active task review, and fast access to the next patient-facing action.",
+      primaryAction: "Open worklist",
     },
     doctor: {
-      badge: activeUser.isTester ? 'Doctor tester workspace' : 'Doctor workspace',
+      badge: activeUser.isTester
+        ? "Doctor tester workspace"
+        : "Doctor workspace",
       title: activeUser.isTester
-        ? 'A focused doctor tester shell for labs, scans, and clinical review.'
-        : 'A doctor workspace that keeps urgent decisions and referrals obvious.',
+        ? "A focused doctor tester shell for labs, scans, and clinical review."
+        : "A doctor workspace that keeps urgent decisions and referrals obvious.",
       description: activeUser.isTester
-        ? 'Tester doctors can validate investigations and devices without a separate auth flow or route tree.'
-        : 'The shell stays decision-oriented so the highest priority case and escalation path remain easy to scan.',
-      primaryAction: activeUser.isTester ? 'Review investigations' : 'Review cases',
+        ? "Tester doctors can validate investigations and devices without a separate auth flow or route tree."
+        : "The shell stays decision-oriented so the highest priority case and escalation path remain easy to scan.",
+      primaryAction: activeUser.isTester
+        ? "Review investigations"
+        : "Review cases",
     },
-  }[activeUser.role]
+    admin: {
+      badge: "Admin workspace",
+      title:
+        "Administrative controls with clear access and archival oversight.",
+      description:
+        "Admin users can access high-privilege flows like archive inspection while keeping operational context visible.",
+      primaryAction: "Review archives",
+    },
+  }[activeUser.role];
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-primary)]">
@@ -148,7 +182,7 @@ export function WorkspacePage() {
                 <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
                   {roleLabel} access is active through the backend JWT session.
                 </p>
-                {activeUser.role === 'doctor' ? (
+                {activeUser.role === "doctor" ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {activeUser.isTester ? (
                       <span className="inline-flex items-center rounded-full border border-[var(--amber-border)] bg-[var(--amber-soft)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--amber-text)]">
@@ -173,7 +207,7 @@ export function WorkspacePage() {
               <button
                 className="min-h-12 rounded-[1.05rem] border border-[var(--border-soft)] bg-white px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
                 onClick={() => {
-                  void logout()
+                  void logout();
                 }}
                 type="button"
               >
@@ -195,8 +229,8 @@ export function WorkspacePage() {
                 </h2>
               </div>
               <p className="max-w-xl text-sm leading-6 text-[var(--text-secondary)] xl:max-w-sm">
-                Each action card uses one dominant button and enough spacing to prevent accidental
-                clicks under pressure.
+                Each action card uses one dominant button and enough spacing to
+                prevent accidental clicks under pressure.
               </p>
             </div>
 
@@ -207,7 +241,9 @@ export function WorkspacePage() {
                   className="flex h-full flex-col rounded-[1.75rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4 sm:p-5"
                 >
                   <div className="flex min-w-0 flex-col items-start gap-3">
-                    <p className="max-w-full text-lg font-semibold break-words">{action.title}</p>
+                    <p className="max-w-full text-lg font-semibold break-words">
+                      {action.title}
+                    </p>
                     <span
                       className={`inline-flex max-w-full self-start whitespace-normal break-words rounded-full border px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-[0.12em] ${
                         actionToneClasses[action.tone]
@@ -236,7 +272,9 @@ export function WorkspacePage() {
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
               Visual brief
             </p>
-            <h2 className="mt-2 text-2xl font-semibold">What the page is proving</h2>
+            <h2 className="mt-2 text-2xl font-semibold">
+              What the page is proving
+            </h2>
             <ul className="mt-5 space-y-3">
               {principles.map((principle) => (
                 <li
@@ -246,7 +284,9 @@ export function WorkspacePage() {
                   <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--teal-soft)] text-xs font-bold text-[var(--teal-strong)]">
                     UI
                   </span>
-                  <p className="text-sm leading-6 text-[var(--text-secondary)]">{principle}</p>
+                  <p className="text-sm leading-6 text-[var(--text-secondary)]">
+                    {principle}
+                  </p>
                 </li>
               ))}
             </ul>
@@ -265,8 +305,8 @@ export function WorkspacePage() {
                 </h2>
               </div>
               <p className="max-w-xl text-sm leading-6 text-[var(--text-secondary)] xl:max-w-sm">
-                The cards use strong grouping, large labels, and one next action instead of a dense
-                spreadsheet.
+                The cards use strong grouping, large labels, and one next action
+                instead of a dense spreadsheet.
               </p>
             </div>
 
@@ -279,7 +319,9 @@ export function WorkspacePage() {
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-3">
-                        <h3 className="max-w-full text-xl font-semibold break-words">{card.name}</h3>
+                        <h3 className="max-w-full text-xl font-semibold break-words">
+                          {card.name}
+                        </h3>
                         <span className="inline-flex max-w-full rounded-full border border-[var(--border-soft)] bg-white px-3 py-1 text-sm font-medium text-[var(--text-secondary)]">
                           {card.id}
                         </span>
@@ -289,11 +331,11 @@ export function WorkspacePage() {
                           }`}
                         >
                           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-current/12 text-[10px] font-bold">
-                            {card.status === 'Critical'
-                              ? 'CR'
-                              : card.status === 'Stable'
-                                ? 'OK'
-                                : 'AT'}
+                            {card.status === "Critical"
+                              ? "CR"
+                              : card.status === "Stable"
+                                ? "OK"
+                                : "AT"}
                           </span>
                           {card.status}
                         </span>
@@ -336,12 +378,18 @@ export function WorkspacePage() {
                         }`}
                       >
                         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-current/12 text-[10px] font-bold">
-                          {item.label === 'Critical' ? 'CR' : item.label === 'Stable' ? 'OK' : 'AT'}
+                          {item.label === "Critical"
+                            ? "CR"
+                            : item.label === "Stable"
+                              ? "OK"
+                              : "AT"}
                         </span>
                         {item.label}
                       </span>
                     </div>
-                    <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{item.note}</p>
+                    <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                      {item.note}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -355,8 +403,9 @@ export function WorkspacePage() {
                 Use this page as the visual starting point
               </h2>
               <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                The example is intentionally static. It exists to anchor the future UI in the calm,
-                safe, high-contrast direction defined in the frontend docs.
+                The example is intentionally static. It exists to anchor the
+                future UI in the calm, safe, high-contrast direction defined in
+                the frontend docs.
               </p>
               <button
                 className="mt-5 min-h-14 w-full rounded-[1.2rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-5 text-base font-semibold text-white shadow-[0_18px_40px_rgba(15,143,138,0.22)] transition hover:bg-[var(--teal-strong)]"
@@ -369,5 +418,5 @@ export function WorkspacePage() {
         </section>
       </div>
     </main>
-  )
+  );
 }
