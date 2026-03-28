@@ -653,6 +653,20 @@ export function PatientQueueRolePage({
     void prefetchPatientDetails(selectedPatientId)
   }, [selectedPatientId])
 
+  if (activeUser.role === 'admin') {
+    return (
+      <main className="min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--text-primary)]">
+        <div className="mx-auto max-w-3xl rounded-[1.5rem] border border-[var(--amber-border)] bg-white p-6 shadow-[0_24px_80px_rgba(21,54,74,0.08)]">
+          <h1 className="text-2xl font-semibold">Admin access uses the archive console</h1>
+          <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+            This live patient queue is limited to registry and nurse workflows. Use the dedicated admin route for archive
+            lookup and operational review.
+          </p>
+        </div>
+      </main>
+    )
+  }
+
   const actor: PatientMutationActor = {
     isTester: activeUser.isTester,
     role: activeUser.role,

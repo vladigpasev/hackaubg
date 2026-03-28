@@ -112,9 +112,18 @@ export const testerDoctors: SeedUserDefinition[] = [
   },
 ];
 
+export const adminUsers: SeedUserDefinition[] = [
+  {
+    username: 'admin.ops',
+    password: 'AdminOps!24',
+    role: 'admin',
+  },
+];
+
 export const allSeedUsers: SeedUserDefinition[] = [
   ...registryUsers,
   ...nurses,
   ...doctors,
   ...testerDoctors,
+  ...adminUsers,
 ];

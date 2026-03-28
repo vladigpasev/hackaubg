@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AuthHomeRedirect } from './auth/AuthHomeRedirect'
 import { ProtectedRoute } from './auth/ProtectedRoute'
 import { PublicOnlyRoute } from './auth/PublicOnlyRoute'
+import { AdminPage } from './pages/AdminPage'
 import { LoginPage } from './pages/LoginPage'
 import { NursePage } from './pages/NursePage'
 import { PublicPatientDetailsPage } from './pages/PublicPatientDetailsPage'
@@ -30,6 +31,10 @@ function App() {
 
       <Route element={<ProtectedRoute allowedRoles={['doctor']} />}>
         <Route path="/doctor" element={<WorkspacePage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+        <Route path="/admin" element={<AdminPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

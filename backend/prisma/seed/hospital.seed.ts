@@ -15,6 +15,7 @@ import {
   PATIENT_RECORD_KEY_PREFIX,
 } from './constants';
 import {
+  adminUsers,
   allSeedUsers,
   doctors,
   nurses,
@@ -57,6 +58,7 @@ export class HospitalSeedRunner {
     await this.seedRegistryUsers();
     await this.seedNurses();
     await this.seedDoctors();
+    await this.seedAdmins();
     const patients = await this.seedPatients();
 
     return {
@@ -75,6 +77,10 @@ export class HospitalSeedRunner {
 
   private async seedDoctors(): Promise<void> {
     await this.upsertUsers([...doctors, ...testerDoctors]);
+  }
+
+  private async seedAdmins(): Promise<void> {
+    await this.upsertUsers(adminUsers);
   }
 
   private async upsertUsers(users: SeedUserDefinition[]): Promise<void> {

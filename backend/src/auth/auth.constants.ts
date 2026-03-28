@@ -3,7 +3,7 @@ import type { CookieOptions } from 'express';
 export const AUTH_COOKIE_NAME = 'hospital_auth';
 export const AUTH_TOKEN_TTL_SECONDS = 60 * 60 * 8;
 export const AUTH_TOKEN_TTL_MS = AUTH_TOKEN_TTL_SECONDS * 1000;
-export const USER_ROLES = ['registry', 'nurse', 'doctor'] as const;
+export const USER_ROLES = ['registry', 'nurse', 'doctor', 'admin'] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
 

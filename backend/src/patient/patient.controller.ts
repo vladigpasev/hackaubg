@@ -35,6 +35,7 @@ import {
   attachPatientNotePayloadSchema,
   CheckInPayloadI,
   checkInPayloadSchema,
+  IArchivedDateResultsResponse,
   UpdatePatientI,
   updatePatientPayloadSchema,
 } from './patient.dto';
@@ -203,6 +204,101 @@ export class PatientController {
   })
   async getAllPatients(): Promise<AllPatientsI> {
     return this.patientService.getAllPatients();
+  }
+
+  @Roles('registry')
+  @Get('archive-now')
+  @ApiOperation({
+    summary: 'Run archival now',
+    description:
+      'Triggers patient archival immediately using the same archival logic as the scheduled job.',
+  })
+  @ApiOkResponse({
+    description: 'Archival executed successfully.',
+    schema: {
+      type: 'object',
+      properties: {
+        archived: { type: 'boolean', example: true },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Authentication cookie is missing or invalid.',
+  })
+  @ApiForbiddenResponse({
+    description: 'Insufficient role. Only registry can run archival.',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Unable to complete archival at this time.',
+  })
+  async archiveNow(): Promise<{ archived: true }> {
+    await this.patientService.executeArchival();
+    return { archived: true };
+  }
+
+  @Roles('admin')
+  @Get('archive/:dateTime')
+  @ApiOperation({
+    summary: 'Read archived records by date-time',
+    description:
+      'Loads archived patient JSON files and archived users CSV for the provided date-time and returns the transformed in-memory result.',
+  })
+  @ApiParam({
+    name: 'dateTime',
+    description:
+      'ISO 8601 date-time used to resolve the archive day in Sofia timezone.',
+    example: '2026-03-29T12:30:00.000Z',
+  })
+  @ApiOkResponse({
+    description: 'Archived records retrieved successfully.',
+    schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', example: '2026-03-29' },
+        count: { type: 'number', example: 5 },
+        users: {
+          type: 'object',
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              username: { type: 'string', example: 'doctor.petrova' },
+              role: {
+                type: 'string',
+                enum: ['registry', 'nurse', 'doctor', 'admin'],
+              },
+              isTester: { type: 'boolean', example: false },
+              specialties: {
+                type: 'array',
+                items: { type: 'string' },
+                example: ['cardiology'],
+              },
+            },
+          },
+        },
+        patients: {
+          type: 'array',
+          items: patientSchema,
+        },
+      },
+    },
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid date-time path parameter.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Archive for the resolved date was not found.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Authentication cookie is missing or invalid.',
+  })
+  @ApiForbiddenResponse({ description: 'Insufficient role for this endpoint.' })
+  @ApiServiceUnavailableResponse({
+    description: 'Unable to read archive contents at this time.',
+  })
+  async getArchiveByDateTime(
+    @Param('dateTime') dateTime: string,
+  ): Promise<IArchivedDateResultsResponse> {
+    return this.patientService.getArchivedByDateTime(dateTime);
   }
 
   @Roles('registry')

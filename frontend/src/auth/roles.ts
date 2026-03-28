@@ -2,6 +2,7 @@ export const ROLE_HOME_PATHS = {
   registry: '/registry',
   nurse: '/nurse',
   doctor: '/doctor',
+  admin: '/admin',
 } as const
 
 export type UserRole = keyof typeof ROLE_HOME_PATHS
@@ -22,5 +23,7 @@ export function formatRoleLabel(role: UserRole) {
       return 'Nurse'
     case 'doctor':
       return 'Doctor'
+    case 'admin':
+      return 'Admin'
   }
 }

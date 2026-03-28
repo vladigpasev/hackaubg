@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './auth/auth.module';
 import { HealthController } from './controller/health.controller';
 import { PublicController } from './controller/public.controller';
@@ -10,7 +11,7 @@ import { RedisService } from './service/redis.service';
 import { StreamService } from './service/stream.service';
 
 @Module({
-  imports: [PrismaModule, AuthModule],
+  imports: [PrismaModule, AuthModule, ScheduleModule.forRoot()],
   controllers: [
     HealthController,
     StreamController,

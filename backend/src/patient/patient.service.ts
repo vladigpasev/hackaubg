@@ -1,21 +1,36 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomUUID } from 'crypto';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import * as zlib from 'node:zlib';
+import { AuthUser } from 'src/auth/auth.types';
+import * as tar from 'tar';
+import { isUserRole } from '../auth/auth.constants';
+import { AuthService } from '../auth/auth.service';
 import { RedisService } from '../service/redis.service';
 import { StreamService } from '../service/stream.service';
 import { TRIAGE_STATES } from '../shared.types';
-import { createJsonArchiver } from '../utils/archiver/jsonArchiver';
+import {
+  createJsonArchiver,
+  getSofiaDateString,
+} from '../utils/archiver/jsonArchiver';
 import {
   AllPatientsI,
   AttachPatientNotePayloadI,
   CheckInPayloadI,
   CheckInResponseI,
+  IArchivedDateResultsResponse,
   PatientDetailsResponseI,
+  PatientI,
   UpdatePatientI,
 } from './patient.dto';
 import { FullPatientDataI } from './patient.type';
@@ -26,6 +41,51 @@ const archiveWriter = createJsonArchiver({
 
 @Injectable()
 export class PatientService {
+  async getArchivedByDateTime(
+    dateTimeValue: string,
+  ): Promise<IArchivedDateResultsResponse> {
+    const normalizedDateTimeValue = dateTimeValue.trim();
+
+    if (!normalizedDateTimeValue) {
+      throw new BadRequestException('date-time path parameter is required');
+    }
+
+    const targetDateTime = new Date(normalizedDateTimeValue);
+
+    if (Number.isNaN(targetDateTime.getTime())) {
+      throw new BadRequestException(
+        'Invalid date-time. Expected an ISO 8601 date-time value.',
+      );
+    }
+
+    const folderDate = getSofiaDateString(targetDateTime, 'Europe/Sofia');
+
+    try {
+      const archivePath = await this.findArchivePathByFolderDate(folderDate);
+      const archiveEntries = await this.readArchiveEntriesInMemory(archivePath);
+
+      const patients = this.parseArchivedPatientsFromEntries(archiveEntries);
+      const users = this.parseArchivedUsersFromEntries(archiveEntries);
+
+      return {
+        date: folderDate,
+        users,
+        patients,
+      };
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
+      throw new ServiceUnavailableException(
+        'Unable to read archived records for the provided date-time',
+      );
+    }
+  }
+
   async updatePatient(
     patientId: string,
     payload: UpdatePatientI,
@@ -366,6 +426,7 @@ export class PatientService {
   constructor(
     private readonly redisService: RedisService,
     private readonly streamService: StreamService,
+    private readonly authService: AuthService,
   ) {}
 
   async getPatientDetailsByPhoneNumber(
@@ -530,82 +591,66 @@ export class PatientService {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
 
-    const patientRecordKeys = await client.keys(
-      this.getPatientRecordPattern(normalizedPatientId),
+    const patientScopedKeys = await client.keys(
+      `patient:*:${normalizedPatientId}`,
     );
 
-    if (patientRecordKeys.length === 0) {
+    if (patientScopedKeys.length === 0) {
       throw new NotFoundException(
         `Patient with id ${normalizedPatientId} is not checked in`,
       );
     }
 
     try {
-      const patientRecords = await client.mGet(patientRecordKeys);
-      const archivedRecords = patientRecordKeys.map((recordKey, index) => {
-        const rawRecord = patientRecords[index];
+      const keysToDelete = new Set(patientScopedKeys);
+      const recordedData: Record<string, unknown> = {};
+      const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+      let phoneLookupKey: string | null = null;
 
-        if (!rawRecord) {
-          return {
-            record_key: recordKey,
-            raw_record: null,
-            parsed_record: null,
-          };
+      for (const key of patientScopedKeys) {
+        const keyValue = await this.readRedisValueByKey(client, key);
+
+        this.assignRecordedDataFromKey(
+          recordedData,
+          key,
+          keyValue,
+          normalizedPatientId,
+        );
+
+        if (key === patientRecordKey) {
+          phoneLookupKey = this.getPhoneLookupKeyFromRecord(keyValue);
         }
+      }
 
-        try {
-          return {
-            record_key: recordKey,
-            raw_record: rawRecord,
-            parsed_record: JSON.parse(rawRecord) as unknown,
-          };
-        } catch {
-          return {
-            record_key: recordKey,
-            raw_record: rawRecord,
-            parsed_record: null,
-            parse_error: 'Invalid JSON payload in Redis record',
-          };
+      if (phoneLookupKey) {
+        const phoneLookupOwnerId = await client.get(phoneLookupKey);
+
+        if (phoneLookupOwnerId === normalizedPatientId) {
+          const phoneLookupValue = await this.readRedisValueByKey(
+            client,
+            phoneLookupKey,
+          );
+
+          this.assignRecordedDataFromKey(
+            recordedData,
+            phoneLookupKey,
+            phoneLookupValue,
+          );
+
+          keysToDelete.add(phoneLookupKey);
         }
-      });
-
-      const phoneLookupKeys = patientRecords
-        .map((record) => {
-          if (!record) {
-            return null;
-          }
-
-          const parsedRecord = JSON.parse(record) as {
-            phone_number?: unknown;
-          } | null;
-
-          if (
-            !parsedRecord ||
-            typeof parsedRecord.phone_number !== 'string' ||
-            !parsedRecord.phone_number.trim()
-          ) {
-            return null;
-          }
-
-          return this.getPhoneLookupKey(parsedRecord.phone_number.trim());
-        })
-        .filter((key): key is string => Boolean(key));
+      }
 
       await archiveWriter.writeJsonRecord(
         `${normalizedPatientId}-${Date.now()}`,
         {
           patient_id: normalizedPatientId,
-          checked_out_at: new Date().toISOString(),
-          patient_record_keys: patientRecordKeys,
-          records: archivedRecords,
+          archived_at: new Date().toISOString(),
+          recorded_data: recordedData,
         },
       );
 
-      if (phoneLookupKeys.length > 0) {
-        await client.del(phoneLookupKeys);
-      }
-
-      await client.del(patientRecordKeys);
+      await client.del([...keysToDelete]);
     } catch {
       throw new ServiceUnavailableException(
         'Unable to complete patient check-out',
@@ -614,10 +659,106 @@ export class PatientService {
 
     this.streamService.pushEvent({
       type: 'patient:check-out',
-      data: { id: patientId },
+      data: { id: normalizedPatientId },
     });
 
     return { checked_out: true };
+  }
+
+  private async readRedisValueByKey(
+    client: RedisService['client'],
+    key: string,
+  ): Promise<unknown> {
+    const keyType = await client.type(key);
+
+    if (keyType === 'string') {
+      const value = await client.get(key);
+      return value === null ? null : this.tryParseJson(value);
+    }
+
+    if (keyType === 'zset') {
+      const values = await client.zRangeWithScores(key, 0, -1);
+
+      return values.map(({ value, score }) => ({
+        value: this.tryParseJson(value),
+        score,
+      }));
+    }
+
+    if (keyType === 'hash') {
+      const values = await client.hGetAll(key);
+
+      return Object.entries(values).reduce<Record<string, unknown>>(
+        (acc, [field, value]) => {
+          acc[field] = this.tryParseJson(value);
+          return acc;
+        },
+        {},
+      );
+    }
+
+    if (keyType === 'list') {
+      const values = await client.lRange(key, 0, -1);
+      return values.map((value) => this.tryParseJson(value));
+    }
+
+    if (keyType === 'set') {
+      const values = await client.sMembers(key);
+      return values.map((value) => this.tryParseJson(value));
+    }
+
+    return null;
+  }
+
+  private assignRecordedDataFromKey(
+    target: Record<string, unknown>,
+    key: string,
+    value: unknown,
+    trailingSegmentToStrip?: string,
+  ): void {
+    const keySegments = key.split(':');
+
+    if (keySegments.length < 2 || keySegments[0] !== 'patient') {
+      return;
+    }
+
+    const pathSegments =
+      trailingSegmentToStrip &&
+      keySegments[keySegments.length - 1] === trailingSegmentToStrip
+        ? keySegments.slice(1, -1)
+        : keySegments.slice(1);
+
+    if (pathSegments.length === 0) {
+      return;
+    }
+
+    let cursor: Record<string, unknown> = target;
+
+    for (let index = 0; index < pathSegments.length; index += 1) {
+      const segment = pathSegments[index];
+      const isLeaf = index === pathSegments.length - 1;
+
+      if (isLeaf) {
+        cursor[segment] = value;
+        return;
+      }
+
+      const nextValue = cursor[segment];
+
+      if (!this.isObject(nextValue)) {
+        cursor[segment] = {};
+      }
+
+      cursor = cursor[segment] as Record<string, unknown>;
+    }
+  }
+
+  private tryParseJson(value: string): unknown {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
   }
 
   private getPhoneLookupKey(phoneNumber: string): string {
@@ -634,6 +775,308 @@ export class PatientService {
 
   private getPatientRecordPattern(patientId: string): string {
     return `${this.getPatientRecordKey(patientId)}*`;
+  }
+
+  private async findArchivePathByFolderDate(
+    folderDate: string,
+  ): Promise<string> {
+    const archiveRoot = resolve(process.cwd(), 'archives');
+    const archiveExtensions = ['tar.br', 'tar.gz', 'tar.zst', 'tar'];
+
+    for (const extension of archiveExtensions) {
+      const candidatePath = resolve(archiveRoot, `${folderDate}.${extension}`);
+
+      try {
+        const archiveStat = await stat(candidatePath);
+        if (archiveStat.isFile()) {
+          return candidatePath;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    }
+
+    throw new NotFoundException(`Archive for date ${folderDate} was not found`);
+  }
+
+  private async readArchiveEntriesInMemory(
+    archivePath: string,
+  ): Promise<Map<string, string>> {
+    const entries = new Map<string, string>();
+    const parser = new tar.Parser({ strict: true });
+
+    parser.on('entry', (entry: tar.ReadEntry) => {
+      if (entry.type !== 'File') {
+        entry.resume();
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      entry.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+
+      entry.on('end', () => {
+        entries.set(entry.path, Buffer.concat(chunks).toString('utf8'));
+      });
+    });
+
+    if (archivePath.endsWith('.tar.br')) {
+      await pipeline(
+        createReadStream(archivePath),
+        zlib.createBrotliDecompress(),
+        parser,
+      );
+      return entries;
+    }
+
+    if (archivePath.endsWith('.tar.gz')) {
+      await pipeline(
+        createReadStream(archivePath),
+        zlib.createGunzip(),
+        parser,
+      );
+      return entries;
+    }
+
+    if (archivePath.endsWith('.tar.zst')) {
+      const createZstdDecompress = (
+        zlib as typeof zlib & {
+          createZstdDecompress?: (
+            options?: Record<string, unknown>,
+          ) => NodeJS.ReadWriteStream;
+        }
+      ).createZstdDecompress;
+
+      if (typeof createZstdDecompress !== 'function') {
+        throw new Error(
+          'The current Node.js runtime does not support zstd decompression.',
+        );
+      }
+
+      await pipeline(
+        createReadStream(archivePath),
+        createZstdDecompress(),
+        parser,
+      );
+      return entries;
+    }
+
+    if (archivePath.endsWith('.tar')) {
+      await pipeline(createReadStream(archivePath), parser);
+      return entries;
+    }
+
+    throw new Error(`Unsupported archive extension: ${archivePath}`);
+  }
+
+  private parseArchivedPatientsFromEntries(
+    entries: Map<string, string>,
+  ): PatientI[] {
+    const patients: PatientI[] = [];
+
+    for (const [entryPath, content] of entries.entries()) {
+      if (!entryPath.endsWith('.json')) {
+        continue;
+      }
+
+      const archivedPatient = this.parseArchivedPatientJson(content, entryPath);
+      patients.push(archivedPatient);
+    }
+
+    return patients;
+  }
+
+  private parseArchivedPatientJson(
+    content: string,
+    entryPath: string,
+  ): PatientI {
+    let parsedJson: unknown;
+
+    try {
+      parsedJson = JSON.parse(content) as unknown;
+    } catch {
+      throw new Error(`Invalid archived JSON content at ${entryPath}`);
+    }
+
+    if (!this.isObject(parsedJson)) {
+      throw new Error(`Archived patient payload is invalid at ${entryPath}`);
+    }
+
+    const patientRecord = parsedJson.recorded_data;
+
+    if (!this.isObject(patientRecord) || !this.isObject(patientRecord.record)) {
+      throw new Error(`Archived patient record is missing at ${entryPath}`);
+    }
+
+    const rawRecord = patientRecord.record;
+    const admittedAtRaw = rawRecord.admitted_at;
+
+    if (
+      typeof rawRecord.id !== 'string' ||
+      typeof rawRecord.name !== 'string' ||
+      typeof rawRecord.phone_number !== 'string' ||
+      typeof rawRecord.triage_state !== 'string' ||
+      !TRIAGE_STATES.includes(
+        rawRecord.triage_state as (typeof TRIAGE_STATES)[number],
+      ) ||
+      typeof admittedAtRaw !== 'string' ||
+      !Array.isArray(rawRecord.notes) ||
+      !rawRecord.notes.every((note) => typeof note === 'string')
+    ) {
+      throw new Error(
+        `Archived patient record has invalid shape at ${entryPath}`,
+      );
+    }
+
+    const admittedAt = new Date(admittedAtRaw);
+
+    if (Number.isNaN(admittedAt.getTime())) {
+      throw new Error(
+        `Archived patient admitted_at is invalid at ${entryPath}`,
+      );
+    }
+
+    return {
+      id: rawRecord.id,
+      name: rawRecord.name,
+      phone_number: rawRecord.phone_number,
+      triage_state: rawRecord.triage_state as CheckInResponseI['triage_state'],
+      admitted_at: admittedAt,
+      notes: rawRecord.notes,
+    };
+  }
+
+  private parseArchivedUsersFromEntries(
+    entries: Map<string, string>,
+  ): Record<string, AuthUser> {
+    const csvEntry = [...entries.entries()].find(([entryPath]) =>
+      entryPath.endsWith('summary.users.csv'),
+    );
+
+    if (!csvEntry) {
+      return {};
+    }
+
+    const [, csvContent] = csvEntry;
+    return this.parseArchivedUsersCsv(csvContent);
+  }
+
+  private parseArchivedUsersCsv(csvContent: string): Record<string, AuthUser> {
+    const rows = this.parseCsvRows(csvContent);
+
+    if (rows.length <= 1) {
+      return {};
+    }
+
+    const users: Record<string, AuthUser> = {};
+
+    for (const row of rows.slice(1)) {
+      if (row.length === 0 || row.every((column) => !column.trim())) {
+        continue;
+      }
+
+      const username = row[0]?.trim();
+      const roleValue = row[1]?.trim();
+      const isTesterValue = row[2]?.trim().toLowerCase();
+      const specialtiesValue = row[3]?.trim() ?? '[]';
+
+      if (!username || !roleValue || !isUserRole(roleValue)) {
+        throw new Error('Archived users CSV contains an invalid user row');
+      }
+
+      if (isTesterValue !== 'true' && isTesterValue !== 'false') {
+        throw new Error(
+          'Archived users CSV contains an invalid isTester value',
+        );
+      }
+
+      const specialties = this.parseSpecialtiesFromCsv(specialtiesValue);
+
+      users[username] = {
+        username,
+        role: roleValue,
+        isTester: isTesterValue === 'true',
+        specialties,
+      };
+    }
+
+    return users;
+  }
+
+  private parseSpecialtiesFromCsv(specialtiesValue: string): string[] {
+    if (!specialtiesValue) {
+      return [];
+    }
+
+    let parsedValue: unknown;
+
+    try {
+      parsedValue = JSON.parse(specialtiesValue) as unknown;
+    } catch {
+      throw new Error('Archived users CSV has invalid specialties JSON');
+    }
+
+    if (
+      !Array.isArray(parsedValue) ||
+      !parsedValue.every((value) => typeof value === 'string')
+    ) {
+      throw new Error('Archived users CSV has invalid specialties shape');
+    }
+
+    return parsedValue;
+  }
+
+  private parseCsvRows(content: string): string[][] {
+    const rows: string[][] = [];
+    let currentRow: string[] = [];
+    let currentCell = '';
+    let isInsideQuotes = false;
+
+    for (let index = 0; index < content.length; index += 1) {
+      const character = content[index];
+      const nextCharacter = content[index + 1];
+
+      if (character === '"') {
+        if (isInsideQuotes && nextCharacter === '"') {
+          currentCell += '"';
+          index += 1;
+          continue;
+        }
+
+        isInsideQuotes = !isInsideQuotes;
+        continue;
+      }
+
+      if (character === ',' && !isInsideQuotes) {
+        currentRow.push(currentCell);
+        currentCell = '';
+        continue;
+      }
+
+      if ((character === '\n' || character === '\r') && !isInsideQuotes) {
+        if (character === '\r' && nextCharacter === '\n') {
+          index += 1;
+        }
+
+        currentRow.push(currentCell);
+        rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+        continue;
+      }
+
+      currentCell += character;
+    }
+
+    if (currentCell.length > 0 || currentRow.length > 0) {
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+    }
+
+    return rows;
   }
 
   private transformToFullPatientData(
@@ -780,5 +1223,31 @@ export class PatientService {
 
   private isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  public async executeArchivalChron(): Promise<void> {
+    await this.executeArchival();
+  }
+
+  public async executeArchival(): Promise<void> {
+    try {
+      // Calculate the date from 10 minutes ago
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+      // Call archiveFolderByDate with transform function that returns all users
+      await archiveWriter.archiveFolderByDate(
+        'users',
+        tenMinutesAgo,
+        async () => {
+          // Return a snapshot of all users at this time
+          const users = await this.authService.getAllUsers();
+          return users as unknown as Record<string, unknown>[];
+        },
+      );
+    } catch (error) {
+      console.error('Error executing archival:', error);
+      throw error;
+    }
   }
 }
