@@ -16,3 +16,7 @@ export interface CheckInResponseI {
   triage_state: TriageState;
   admitted_at: Date;
 }
+
+export interface PatientI extends CheckInResponseI {}
+
+export type AllPatientsI = PatientI[];

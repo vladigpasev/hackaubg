@@ -7,8 +7,9 @@ import {
 import { randomUUID } from 'crypto';
 import { resolve } from 'node:path';
 import { RedisService } from 'src/service/redis.service';
+import { TRIAGE_STATES } from 'src/shared.types';
 import { createJsonArchiver } from 'src/utils/archiver/jsonArchiver';
-import { CheckInPayloadI, CheckInResponseI } from './patient.dto';
+import { AllPatientsI, CheckInPayloadI, CheckInResponseI } from './patient.dto';
 
 const archiveWriter = createJsonArchiver({
   rootDir: resolve(process.cwd(), 'archives'),
@@ -17,6 +18,72 @@ const archiveWriter = createJsonArchiver({
 @Injectable()
 export class PatientService {
   constructor(private readonly redisService: RedisService) {}
+
+  async getAllPatients(): Promise<AllPatientsI> {
+    const client = this.redisService.client;
+
+    try {
+      const patientRecordKeys = await client.keys(
+        this.getPatientRecordPattern(''),
+      );
+
+      if (patientRecordKeys.length === 0) {
+        return [];
+      }
+
+      const patientRecords = await client.mGet(patientRecordKeys);
+
+      return patientRecords
+        .map((record) => {
+          if (!record) {
+            return null;
+          }
+
+          try {
+            const parsedRecord = JSON.parse(record) as {
+              id?: unknown;
+              name?: unknown;
+              phone_number?: unknown;
+              triage_state?: unknown;
+              admitted_at?: unknown;
+            } | null;
+
+            if (
+              !parsedRecord ||
+              typeof parsedRecord.id !== 'string' ||
+              typeof parsedRecord.name !== 'string' ||
+              typeof parsedRecord.phone_number !== 'string' ||
+              typeof parsedRecord.triage_state !== 'string' ||
+              !TRIAGE_STATES.includes(
+                parsedRecord.triage_state as (typeof TRIAGE_STATES)[number],
+              ) ||
+              typeof parsedRecord.admitted_at !== 'string'
+            ) {
+              return null;
+            }
+
+            const admittedAt = new Date(parsedRecord.admitted_at);
+
+            if (Number.isNaN(admittedAt.getTime())) {
+              return null;
+            }
+
+            return {
+              id: parsedRecord.id,
+              name: parsedRecord.name,
+              phone_number: parsedRecord.phone_number,
+              triage_state: parsedRecord.triage_state,
+              admitted_at: admittedAt,
+            };
+          } catch {
+            return null;
+          }
+        })
+        .filter((patient): patient is CheckInResponseI => Boolean(patient));
+    } catch {
+      throw new ServiceUnavailableException('Unable to retrieve patients');
+    }
+  }
 
   async checkIn(payload: CheckInPayloadI): Promise<CheckInResponseI> {
     const client = this.redisService.client;
