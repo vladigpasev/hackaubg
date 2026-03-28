@@ -236,7 +236,7 @@ export class PatientController {
     return { archived: true };
   }
 
-  @Roles('admin')
+  @Roles('registry', 'nurse', 'doctor')
   @Get('archive/:dateTime')
   @ApiOperation({
     summary: 'Read archived records by date-time',

@@ -55,5 +55,5 @@ export type AllPatientsI = PatientI[];
 export interface IArchivedDateResultsResponse {
   date: string;
   users: Record<string, AuthUser>;
-  patients: PatientI[];
+  patients: PatientDetailsResponseI[];
 }

@@ -30,10 +30,9 @@ import {
   CheckInResponseI,
   IArchivedDateResultsResponse,
   PatientDetailsResponseI,
-  PatientI,
   UpdatePatientI,
 } from './patient.dto';
-import { FullPatientDataI } from './patient.type';
+import { FullPatientDataI, HistoryRecordI, QueueRecordI } from './patient.type';
 
 const archiveWriter = createJsonArchiver({
   rootDir: resolve(process.cwd(), 'archives'),
@@ -442,7 +441,9 @@ export class PatientService {
     let patientId: string | null;
 
     try {
-      patientId = await client.get(this.getPhoneLookupKey(normalizedPhoneNumber));
+      patientId = await client.get(
+        this.getPhoneLookupKey(normalizedPhoneNumber),
+      );
     } catch {
       throw new ServiceUnavailableException(
         'Unable to retrieve patient details',
@@ -874,8 +875,8 @@ export class PatientService {
 
   private parseArchivedPatientsFromEntries(
     entries: Map<string, string>,
-  ): PatientI[] {
-    const patients: PatientI[] = [];
+  ): PatientDetailsResponseI[] {
+    const patients: PatientDetailsResponseI[] = [];
 
     for (const [entryPath, content] of entries.entries()) {
       if (!entryPath.endsWith('.json')) {
@@ -892,7 +893,7 @@ export class PatientService {
   private parseArchivedPatientJson(
     content: string,
     entryPath: string,
-  ): PatientI {
+  ): PatientDetailsResponseI {
     let parsedJson: unknown;
 
     try {
@@ -946,6 +947,8 @@ export class PatientService {
       triage_state: rawRecord.triage_state as CheckInResponseI['triage_state'],
       admitted_at: admittedAt,
       notes: rawRecord.notes,
+      history: (rawRecord.history as HistoryRecordI[]) ?? [],
+      queue: (rawRecord.queue as QueueRecordI[]) ?? [],
     };
   }
 
