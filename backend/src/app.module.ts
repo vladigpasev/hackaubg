@@ -1,12 +1,13 @@
-import { StreamController } from './controller/stream.controller.js';
-import { PrismaService } from './service/prisma.service.js';
-import { StreamService } from './service/stream.service.js';
-import { RedisService } from './service/redis.service.js';
+import { StreamController } from './controller/stream.controller';
+import { HealthController } from './controller/health.controller';
+import { PrismaService } from './service/prisma.service';
+import { StreamService } from './service/stream.service';
+import { RedisService } from './service/redis.service';
 import { Module } from '@nestjs/common';
 
 @Module({
   imports: [],
-  controllers: [StreamController],
+  controllers: [HealthController, StreamController],
   providers: [PrismaService, RedisService, StreamService],
 })
 export class AppModule {}
