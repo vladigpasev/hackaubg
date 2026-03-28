@@ -27,4 +27,9 @@ export class PatientController {
   checkOut(@Param('patient_id') patientId: string) {
     return this.patientService.checkOut(patientId);
   }
+
+  @Get('details/:patient_id')
+  async getPatientDetails(@Param('patient_id') patientId: string) {
+    return this.patientService.getPatientDetails(patientId);
+  }
 }

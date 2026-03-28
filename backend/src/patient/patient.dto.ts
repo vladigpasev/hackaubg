@@ -1,5 +1,6 @@
 import { TRIAGE_STATES, TriageState } from 'src/shared.types';
 import { z } from 'zod';
+import { HistoryRecordI, QueueRecordI } from './patient.type';
 
 export const checkInPayloadSchema = z.object({
   name: z.string().trim().min(1, 'name is required'),
@@ -15,6 +16,11 @@ export interface CheckInResponseI {
   phone_number: string;
   triage_state: TriageState;
   admitted_at: Date;
+}
+
+export interface PatientDetailsResponseI extends CheckInResponseI {
+  queue: QueueRecordI[];
+  history: HistoryRecordI[];
 }
 
 export interface PatientI extends CheckInResponseI {}
