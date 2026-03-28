@@ -5,10 +5,10 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { compare } from 'bcryptjs';
-import { AUTH_TOKEN_TTL_SECONDS, isUserRole } from './auth.constants';
-import type { LoginDto } from './dto/login.dto';
-import type { AuthTokenPayload, AuthUser, UserRecord } from './auth.types';
 import { PrismaService } from '../service/prisma.service';
+import { AUTH_TOKEN_TTL_SECONDS, isUserRole } from './auth.constants';
+import type { AuthTokenPayload, AuthUser, UserRecord } from './auth.types';
+import type { LoginDto } from './dto/login.dto';
 
 interface AuthResult {
   token: string;
@@ -108,5 +108,10 @@ export class AuthService {
     } catch {
       return [];
     }
+  }
+
+  public async getAllUsers(): Promise<AuthUser[]> {
+    const users = await this.prisma.user.findMany();
+    return users.map((user) => this.serializeUser(user));
   }
 }

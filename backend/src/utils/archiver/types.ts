@@ -16,7 +16,6 @@ export interface ArchiveFolderResult {
   sourceFolderPath: string;
   archivePath: string;
   csvPath: string;
-  extractedCount: number;
   csvRowCount: number;
 }
 

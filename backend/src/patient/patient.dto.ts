@@ -1,5 +1,6 @@
-import { TRIAGE_STATES, TriageState } from '../shared.types';
+import { AuthUser } from 'src/auth/auth.types';
 import { z } from 'zod';
+import { TRIAGE_STATES, TriageState } from '../shared.types';
 import { HistoryRecordI, QueueRecordI } from './patient.type';
 
 export const checkInPayloadSchema = z.object({
@@ -51,3 +52,8 @@ export interface PatientI extends CheckInResponseI {}
 
 export type AllPatientsI = PatientI[];
 
+export interface IArchivedDateResultsResponse {
+  date: string;
+  users: Record<string, AuthUser>;
+  patients: PatientI[];
+}

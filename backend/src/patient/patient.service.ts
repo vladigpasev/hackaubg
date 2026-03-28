@@ -1,21 +1,36 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomUUID } from 'crypto';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import * as zlib from 'node:zlib';
+import { AuthUser } from 'src/auth/auth.types';
+import * as tar from 'tar';
+import { isUserRole } from '../auth/auth.constants';
+import { AuthService } from '../auth/auth.service';
 import { RedisService } from '../service/redis.service';
 import { StreamService } from '../service/stream.service';
 import { TRIAGE_STATES } from '../shared.types';
-import { createJsonArchiver } from '../utils/archiver/jsonArchiver';
+import {
+  createJsonArchiver,
+  getSofiaDateString,
+} from '../utils/archiver/jsonArchiver';
 import {
   AllPatientsI,
   AttachPatientNotePayloadI,
   CheckInPayloadI,
   CheckInResponseI,
+  IArchivedDateResultsResponse,
   PatientDetailsResponseI,
+  PatientI,
   UpdatePatientI,
 } from './patient.dto';
 import { FullPatientDataI } from './patient.type';
@@ -26,6 +41,51 @@ const archiveWriter = createJsonArchiver({
 
 @Injectable()
 export class PatientService {
+  async getArchivedByDateTime(
+    dateTimeValue: string,
+  ): Promise<IArchivedDateResultsResponse> {
+    const normalizedDateTimeValue = dateTimeValue.trim();
+
+    if (!normalizedDateTimeValue) {
+      throw new BadRequestException('date-time path parameter is required');
+    }
+
+    const targetDateTime = new Date(normalizedDateTimeValue);
+
+    if (Number.isNaN(targetDateTime.getTime())) {
+      throw new BadRequestException(
+        'Invalid date-time. Expected an ISO 8601 date-time value.',
+      );
+    }
+
+    const folderDate = getSofiaDateString(targetDateTime, 'Europe/Sofia');
+
+    try {
+      const archivePath = await this.findArchivePathByFolderDate(folderDate);
+      const archiveEntries = await this.readArchiveEntriesInMemory(archivePath);
+
+      const patients = this.parseArchivedPatientsFromEntries(archiveEntries);
+      const users = this.parseArchivedUsersFromEntries(archiveEntries);
+
+      return {
+        date: folderDate,
+        users,
+        patients,
+      };
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
+      throw new ServiceUnavailableException(
+        'Unable to read archived records for the provided date-time',
+      );
+    }
+  }
+
   async updatePatient(
     patientId: string,
     payload: UpdatePatientI,
@@ -366,6 +426,7 @@ export class PatientService {
   constructor(
     private readonly redisService: RedisService,
     private readonly streamService: StreamService,
+    private readonly authService: AuthService,
   ) {}
 
   async getAllPatients(): Promise<AllPatientsI> {
@@ -687,6 +748,308 @@ export class PatientService {
     return `${this.getPatientRecordKey(patientId)}*`;
   }
 
+  private async findArchivePathByFolderDate(
+    folderDate: string,
+  ): Promise<string> {
+    const archiveRoot = resolve(process.cwd(), 'archives');
+    const archiveExtensions = ['tar.br', 'tar.gz', 'tar.zst', 'tar'];
+
+    for (const extension of archiveExtensions) {
+      const candidatePath = resolve(archiveRoot, `${folderDate}.${extension}`);
+
+      try {
+        const archiveStat = await stat(candidatePath);
+        if (archiveStat.isFile()) {
+          return candidatePath;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    }
+
+    throw new NotFoundException(`Archive for date ${folderDate} was not found`);
+  }
+
+  private async readArchiveEntriesInMemory(
+    archivePath: string,
+  ): Promise<Map<string, string>> {
+    const entries = new Map<string, string>();
+    const parser = new tar.Parser({ strict: true });
+
+    parser.on('entry', (entry: tar.ReadEntry) => {
+      if (entry.type !== 'File') {
+        entry.resume();
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      entry.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+
+      entry.on('end', () => {
+        entries.set(entry.path, Buffer.concat(chunks).toString('utf8'));
+      });
+    });
+
+    if (archivePath.endsWith('.tar.br')) {
+      await pipeline(
+        createReadStream(archivePath),
+        zlib.createBrotliDecompress(),
+        parser,
+      );
+      return entries;
+    }
+
+    if (archivePath.endsWith('.tar.gz')) {
+      await pipeline(
+        createReadStream(archivePath),
+        zlib.createGunzip(),
+        parser,
+      );
+      return entries;
+    }
+
+    if (archivePath.endsWith('.tar.zst')) {
+      const createZstdDecompress = (
+        zlib as typeof zlib & {
+          createZstdDecompress?: (
+            options?: Record<string, unknown>,
+          ) => NodeJS.ReadWriteStream;
+        }
+      ).createZstdDecompress;
+
+      if (typeof createZstdDecompress !== 'function') {
+        throw new Error(
+          'The current Node.js runtime does not support zstd decompression.',
+        );
+      }
+
+      await pipeline(
+        createReadStream(archivePath),
+        createZstdDecompress(),
+        parser,
+      );
+      return entries;
+    }
+
+    if (archivePath.endsWith('.tar')) {
+      await pipeline(createReadStream(archivePath), parser);
+      return entries;
+    }
+
+    throw new Error(`Unsupported archive extension: ${archivePath}`);
+  }
+
+  private parseArchivedPatientsFromEntries(
+    entries: Map<string, string>,
+  ): PatientI[] {
+    const patients: PatientI[] = [];
+
+    for (const [entryPath, content] of entries.entries()) {
+      if (!entryPath.endsWith('.json')) {
+        continue;
+      }
+
+      const archivedPatient = this.parseArchivedPatientJson(content, entryPath);
+      patients.push(archivedPatient);
+    }
+
+    return patients;
+  }
+
+  private parseArchivedPatientJson(
+    content: string,
+    entryPath: string,
+  ): PatientI {
+    let parsedJson: unknown;
+
+    try {
+      parsedJson = JSON.parse(content) as unknown;
+    } catch {
+      throw new Error(`Invalid archived JSON content at ${entryPath}`);
+    }
+
+    if (!this.isObject(parsedJson)) {
+      throw new Error(`Archived patient payload is invalid at ${entryPath}`);
+    }
+
+    const patientRecord = parsedJson.recorded_data;
+
+    if (!this.isObject(patientRecord) || !this.isObject(patientRecord.record)) {
+      throw new Error(`Archived patient record is missing at ${entryPath}`);
+    }
+
+    const rawRecord = patientRecord.record;
+    const admittedAtRaw = rawRecord.admitted_at;
+
+    if (
+      typeof rawRecord.id !== 'string' ||
+      typeof rawRecord.name !== 'string' ||
+      typeof rawRecord.phone_number !== 'string' ||
+      typeof rawRecord.triage_state !== 'string' ||
+      !TRIAGE_STATES.includes(
+        rawRecord.triage_state as (typeof TRIAGE_STATES)[number],
+      ) ||
+      typeof admittedAtRaw !== 'string' ||
+      !Array.isArray(rawRecord.notes) ||
+      !rawRecord.notes.every((note) => typeof note === 'string')
+    ) {
+      throw new Error(
+        `Archived patient record has invalid shape at ${entryPath}`,
+      );
+    }
+
+    const admittedAt = new Date(admittedAtRaw);
+
+    if (Number.isNaN(admittedAt.getTime())) {
+      throw new Error(
+        `Archived patient admitted_at is invalid at ${entryPath}`,
+      );
+    }
+
+    return {
+      id: rawRecord.id,
+      name: rawRecord.name,
+      phone_number: rawRecord.phone_number,
+      triage_state: rawRecord.triage_state as CheckInResponseI['triage_state'],
+      admitted_at: admittedAt,
+      notes: rawRecord.notes,
+    };
+  }
+
+  private parseArchivedUsersFromEntries(
+    entries: Map<string, string>,
+  ): Record<string, AuthUser> {
+    const csvEntry = [...entries.entries()].find(([entryPath]) =>
+      entryPath.endsWith('summary.users.csv'),
+    );
+
+    if (!csvEntry) {
+      return {};
+    }
+
+    const [, csvContent] = csvEntry;
+    return this.parseArchivedUsersCsv(csvContent);
+  }
+
+  private parseArchivedUsersCsv(csvContent: string): Record<string, AuthUser> {
+    const rows = this.parseCsvRows(csvContent);
+
+    if (rows.length <= 1) {
+      return {};
+    }
+
+    const users: Record<string, AuthUser> = {};
+
+    for (const row of rows.slice(1)) {
+      if (row.length === 0 || row.every((column) => !column.trim())) {
+        continue;
+      }
+
+      const username = row[0]?.trim();
+      const roleValue = row[1]?.trim();
+      const isTesterValue = row[2]?.trim().toLowerCase();
+      const specialtiesValue = row[3]?.trim() ?? '[]';
+
+      if (!username || !roleValue || !isUserRole(roleValue)) {
+        throw new Error('Archived users CSV contains an invalid user row');
+      }
+
+      if (isTesterValue !== 'true' && isTesterValue !== 'false') {
+        throw new Error(
+          'Archived users CSV contains an invalid isTester value',
+        );
+      }
+
+      const specialties = this.parseSpecialtiesFromCsv(specialtiesValue);
+
+      users[username] = {
+        username,
+        role: roleValue,
+        isTester: isTesterValue === 'true',
+        specialties,
+      };
+    }
+
+    return users;
+  }
+
+  private parseSpecialtiesFromCsv(specialtiesValue: string): string[] {
+    if (!specialtiesValue) {
+      return [];
+    }
+
+    let parsedValue: unknown;
+
+    try {
+      parsedValue = JSON.parse(specialtiesValue) as unknown;
+    } catch {
+      throw new Error('Archived users CSV has invalid specialties JSON');
+    }
+
+    if (
+      !Array.isArray(parsedValue) ||
+      !parsedValue.every((value) => typeof value === 'string')
+    ) {
+      throw new Error('Archived users CSV has invalid specialties shape');
+    }
+
+    return parsedValue;
+  }
+
+  private parseCsvRows(content: string): string[][] {
+    const rows: string[][] = [];
+    let currentRow: string[] = [];
+    let currentCell = '';
+    let isInsideQuotes = false;
+
+    for (let index = 0; index < content.length; index += 1) {
+      const character = content[index];
+      const nextCharacter = content[index + 1];
+
+      if (character === '"') {
+        if (isInsideQuotes && nextCharacter === '"') {
+          currentCell += '"';
+          index += 1;
+          continue;
+        }
+
+        isInsideQuotes = !isInsideQuotes;
+        continue;
+      }
+
+      if (character === ',' && !isInsideQuotes) {
+        currentRow.push(currentCell);
+        currentCell = '';
+        continue;
+      }
+
+      if ((character === '\n' || character === '\r') && !isInsideQuotes) {
+        if (character === '\r' && nextCharacter === '\n') {
+          index += 1;
+        }
+
+        currentRow.push(currentCell);
+        rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+        continue;
+      }
+
+      currentCell += character;
+    }
+
+    if (currentCell.length > 0 || currentRow.length > 0) {
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+    }
+
+    return rows;
+  }
+
   private transformToFullPatientData(
     patientId: string,
     rawRecord: unknown,
@@ -830,5 +1193,31 @@ export class PatientService {
 
   private isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  public async executeArchivalChron(): Promise<void> {
+    await this.executeArchival();
+  }
+
+  public async executeArchival(): Promise<void> {
+    try {
+      // Calculate the date from 10 minutes ago
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+      // Call archiveFolderByDate with transform function that returns all users
+      await archiveWriter.archiveFolderByDate(
+        'users',
+        tenMinutesAgo,
+        async () => {
+          // Return a snapshot of all users at this time
+          const users = await this.authService.getAllUsers();
+          return users as unknown as Record<string, unknown>[];
+        },
+      );
+    } catch (error) {
+      console.error('Error executing archival:', error);
+      throw error;
+    }
   }
 }
