@@ -181,9 +181,126 @@ function getLastUpdatedAt(core: BackendPatientCore, agenda: PatientAgendaEntry[]
   ).toISOString()
 }
 
+function buildServerActorLabel(actorId: string) {
+  return actorId
+    .split('.')
+    .filter(Boolean)
+    .map((segment) => `${segment[0]?.toUpperCase() ?? ''}${segment.slice(1)}`)
+    .join(' ')
+}
+
+function buildServerEntryId(prefix: string, patientId: string, suffix: string) {
+  return `${prefix}:${patientId}:${suffix}`
+}
+
+function isLabSpecialty(specialty: string) {
+  const normalizedSpecialty = normalizeSpecialty(specialty)
+
+  if (normalizedSpecialty === 'laboratory medicine' || normalizedSpecialty === 'radiology') {
+    return true
+  }
+
+  return [
+    'blood-test',
+    'urinalysis',
+    'imaging',
+    'scanner',
+    'x-ray',
+    'ct-scan',
+    'ultrasound',
+    'echocardiogram',
+  ].includes(normalizeValue(specialty))
+}
+
+function buildAgendaFromPatientDetail(core: BackendPatientCore, detail: BackendPatientDetails | null): PatientAgendaEntry[] {
+  if (!detail) {
+    return []
+  }
+
+  const completedDoctorVisits = detail.history
+    .filter((entry) => entry.isDone && !isLabSpecialty(entry.specialty))
+    .map((entry, index) => ({
+      assignedDoctorId: null,
+      blockedByBatchId: null,
+      code: normalizeBackendCode(entry.triageState),
+      completedAt: entry.timestamp,
+      createdAt: entry.timestamp,
+      entryType: 'doctor_visit' as const,
+      id: buildServerEntryId('server-visit', core.id, `${normalizeValue(entry.specialty)}:${index}`),
+      isReturnVisit: false,
+      note: '',
+      queueOrder: 0,
+      requestedByLabel: buildServerActorLabel(entry.referredById),
+      sourceVisitId: null,
+      specialty: entry.specialty,
+      status: 'done' as const,
+      updatedAt: entry.timestamp,
+    }))
+
+  const activeQueueEntries = detail.queue.map((entry, index) => {
+    const normalizedCode = normalizeBackendCode(entry.triageState)
+    const createdAt = entry.timestamp
+
+    if (isLabSpecialty(entry.specialty)) {
+      return {
+        createdAt,
+        entryType: 'lab_batch' as const,
+        id: buildServerEntryId('server-lab-batch', core.id, `${normalizeValue(entry.specialty)}:${index}`),
+        items: [
+          {
+            assignedDoctorId: null,
+            code: normalizedCode,
+            createdAt,
+            id: buildServerEntryId('server-lab-item', core.id, `${normalizeValue(entry.specialty)}:${index}`),
+            queueOrder: 0,
+            status: 'queued' as const,
+            takenAt: null,
+            takenByLabel: null,
+            testName: entry.specialty,
+            testerSpecialty: entry.specialty,
+            updatedAt: createdAt,
+          },
+        ],
+        note: '',
+        orderedByDoctorId: null,
+        orderedByLabel: buildServerActorLabel(entry.referredById),
+        resultsReadyAt: null,
+        returnCode: normalizedCode,
+        returnCreatedAt: null,
+        returnDoctorId: null,
+        returnSpecialty: entry.specialty,
+        sourceVisitId: buildServerEntryId('server-source', core.id, `${normalizeValue(entry.specialty)}:${index}`),
+        status: 'collecting' as const,
+        updatedAt: createdAt,
+      }
+    }
+
+    return {
+      assignedDoctorId: null,
+      blockedByBatchId: null,
+      code: normalizedCode,
+      completedAt: null,
+      createdAt,
+      entryType: 'doctor_visit' as const,
+      id: buildServerEntryId('server-visit', core.id, `${normalizeValue(entry.specialty)}:queued:${index}`),
+      isReturnVisit: false,
+      note: '',
+      queueOrder: 0,
+      requestedByLabel: buildServerActorLabel(entry.referredById),
+      sourceVisitId: null,
+      specialty: entry.specialty,
+      status: 'queued' as const,
+      updatedAt: createdAt,
+    }
+  })
+
+  return [...completedDoctorVisits, ...activeQueueEntries]
+}
+
 function mergePatient(core: BackendPatientCore, overlayAgenda: PatientAgendaEntry[]): Patient {
   const detail = detailCache.get(core.id) ?? null
-  const agenda = overlayAgenda.map(cloneAgendaEntry)
+  const agendaSource = overlayAgenda.length > 0 ? overlayAgenda : buildAgendaFromPatientDetail(core, detail)
+  const agenda = agendaSource.map(cloneAgendaEntry)
 
   return {
     admittedAt: core.admittedAt,
@@ -685,6 +802,21 @@ async function loadSnapshot(options?: {
   runtimeDoctors?: DoctorProfile[]
 }) {
   const corePatients = await listPatients()
+  await Promise.all(
+    corePatients.map(async (patient) => {
+      try {
+        const details = await fetchPatientDetailsFromApi(patient.id)
+        detailCache.set(patient.id, details)
+      } catch (error) {
+        if (error instanceof HospitalApiError && error.status === 404) {
+          detailCache.delete(patient.id)
+          return
+        }
+
+        throw error
+      }
+    }),
+  )
   const store = loadOverlayStore()
   pruneOverlayStore(
     store,
