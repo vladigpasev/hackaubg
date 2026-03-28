@@ -7,6 +7,7 @@ import {
 import { randomUUID } from 'crypto';
 import { resolve } from 'node:path';
 import { RedisService } from 'src/service/redis.service';
+import { StreamService } from 'src/service/stream.service';
 import { TRIAGE_STATES } from 'src/shared.types';
 import { createJsonArchiver } from 'src/utils/archiver/jsonArchiver';
 import {
@@ -166,7 +167,7 @@ export class PatientService {
       );
     }
 
-    return {
+    const record = {
       id: normalizedPatientId,
       name: nextName,
       phone_number: nextPhone,
@@ -174,6 +175,13 @@ export class PatientService {
       admitted_at: admittedAt,
       notes: currentNotes,
     };
+
+    this.streamService.pushEvent({
+      type: 'patient:update',
+      data: record,
+    });
+
+    return record;
   }
 
   async attachNote(
@@ -220,6 +228,11 @@ export class PatientService {
       };
 
       await client.set(patientRecordKey, JSON.stringify(updatedRecord));
+
+      this.streamService.pushEvent({
+        type: 'patient:update',
+        data: { id: patientId, notes: updatedRecord.notes },
+      });
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw error;
@@ -349,7 +362,11 @@ export class PatientService {
       );
     }
   }
-  constructor(private readonly redisService: RedisService) {}
+
+  constructor(
+    private readonly redisService: RedisService,
+    private readonly streamService: StreamService,
+  ) {}
 
   async getAllPatients(): Promise<AllPatientsI> {
     const client = this.redisService.client;
@@ -472,6 +489,11 @@ export class PatientService {
       );
     }
 
+    this.streamService.pushEvent({
+      type: 'patient:check-in',
+      data: record,
+    });
+
     return record;
   }
 
@@ -560,6 +582,11 @@ export class PatientService {
         'Unable to complete patient check-out',
       );
     }
+
+    this.streamService.pushEvent({
+      type: 'patient:check-out',
+      data: { id: patientId },
+    });
 
     return { checked_out: true };
   }
