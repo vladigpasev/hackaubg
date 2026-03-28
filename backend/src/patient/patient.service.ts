@@ -129,6 +129,7 @@ export class PatientService {
         phone_number: transformedData.phone_number,
         triage_state: transformedData.triage_state,
         admitted_at: new Date(transformedData.admitted_at),
+        notes: transformedData.notes,
         history: transformedData.history,
         queue: transformedData.queue,
       };
@@ -171,6 +172,7 @@ export class PatientService {
               phone_number?: unknown;
               triage_state?: unknown;
               admitted_at?: unknown;
+              notes?: unknown;
             } | null;
 
             if (
@@ -182,7 +184,9 @@ export class PatientService {
               !TRIAGE_STATES.includes(
                 parsedRecord.triage_state as (typeof TRIAGE_STATES)[number],
               ) ||
-              typeof parsedRecord.admitted_at !== 'string'
+              typeof parsedRecord.admitted_at !== 'string' ||
+              !Array.isArray(parsedRecord.notes) ||
+              !parsedRecord.notes.every((note) => typeof note === 'string')
             ) {
               return null;
             }
@@ -199,6 +203,7 @@ export class PatientService {
               phone_number: parsedRecord.phone_number,
               triage_state: parsedRecord.triage_state,
               admitted_at: admittedAt,
+              notes: parsedRecord.notes,
             };
           } catch {
             return null;
@@ -230,6 +235,7 @@ export class PatientService {
       phone_number: normalizedPhone,
       triage_state: payload.triage_state,
       admitted_at: now,
+      notes: [],
     };
 
     const patientRecordKey = this.getPatientRecordKey(record.id);
@@ -444,6 +450,8 @@ export class PatientService {
         value.triage_state as (typeof TRIAGE_STATES)[number],
       ) ||
       typeof value.admitted_at !== 'string' ||
+      !Array.isArray(value.notes) ||
+      !value.notes.every((note) => typeof note === 'string') ||
       !Array.isArray(value.history) ||
       !Array.isArray(value.queue)
     ) {

@@ -16,6 +16,7 @@ export interface CheckInResponseI {
   phone_number: string;
   triage_state: TriageState;
   admitted_at: Date;
+  notes: string[];
 }
 
 export interface PatientDetailsResponseI extends CheckInResponseI {

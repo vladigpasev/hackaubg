@@ -6,6 +6,7 @@ export interface FullPatientDataI {
   phone_number: string;
   triage_state: TriageState;
   admitted_at: string;
+  notes: string[];
   history: HistoryRecordI[];
   queue: QueueRecordI[];
 }
