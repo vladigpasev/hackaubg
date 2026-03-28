@@ -8,7 +8,14 @@ export const checkInPayloadSchema = z.object({
   triage_state: z.enum(TRIAGE_STATES),
 });
 
+export const attachPatientNotePayloadSchema = z.object({
+  note: z.string().trim().min(1, 'note is required'),
+});
+
 export type CheckInPayloadI = z.infer<typeof checkInPayloadSchema>;
+export type AttachPatientNotePayloadI = z.infer<
+  typeof attachPatientNotePayloadSchema
+>;
 
 export interface CheckInResponseI {
   id: string;

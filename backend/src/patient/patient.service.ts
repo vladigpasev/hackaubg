@@ -11,6 +11,7 @@ import { TRIAGE_STATES } from 'src/shared.types';
 import { createJsonArchiver } from 'src/utils/archiver/jsonArchiver';
 import {
   AllPatientsI,
+  AttachPatientNotePayloadI,
   CheckInPayloadI,
   CheckInResponseI,
   PatientDetailsResponseI,
@@ -23,6 +24,59 @@ const archiveWriter = createJsonArchiver({
 
 @Injectable()
 export class PatientService {
+  async attachNote(
+    patientId: string,
+    payload: AttachPatientNotePayloadI,
+  ): Promise<void> {
+    const client = this.redisService.client;
+    const normalizedPatientId = patientId.trim();
+    const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+
+    try {
+      const rawPatientRecord = await client.get(patientRecordKey);
+
+      if (!rawPatientRecord) {
+        throw new NotFoundException(
+          `Patient with id ${normalizedPatientId} is not checked in`,
+        );
+      }
+
+      let parsedPatientRecord: unknown;
+      try {
+        parsedPatientRecord = JSON.parse(rawPatientRecord) as unknown;
+      } catch {
+        throw new NotFoundException(
+          `Patient with id ${normalizedPatientId} has invalid data`,
+        );
+      }
+
+      if (!this.isObject(parsedPatientRecord)) {
+        throw new NotFoundException(
+          `Patient with id ${normalizedPatientId} has invalid data`,
+        );
+      }
+
+      const existingNotes =
+        Array.isArray(parsedPatientRecord.notes) &&
+        parsedPatientRecord.notes.every((note) => typeof note === 'string')
+          ? parsedPatientRecord.notes
+          : [];
+
+      const updatedRecord = {
+        ...parsedPatientRecord,
+        notes: [payload.note, ...existingNotes],
+      };
+
+      await client.set(patientRecordKey, JSON.stringify(updatedRecord));
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+
+      throw new ServiceUnavailableException('Unable to attach note to patient');
+    }
+  }
+
   async getPatientDetails(patientId: string): Promise<PatientDetailsResponseI> {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
