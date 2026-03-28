@@ -58,6 +58,14 @@ This document is the canonical visual specification for the hospital frontend fo
 - Group related information into clearly separated cards or sections.
 - Keep page headers compact but clear, with the page purpose and next action visible immediately.
 
+## Responsive Behavior
+
+- Every screen must work cleanly on mobile, tablet, laptop, desktop, and large monitors.
+- Nothing may overflow its container, card, or viewport.
+- If content becomes tight, stack or wrap the layout before shrinking it into an unreadable state.
+- Pills, badges, chips, buttons, and headings must remain fully visible inside their parent boxes.
+- Avoid horizontal scrolling for primary workflows unless the content is truly exceptional.
+
 ## Controls
 
 - Primary buttons: minimum height `56px`.

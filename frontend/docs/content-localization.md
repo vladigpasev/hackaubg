@@ -47,6 +47,7 @@ The MVP uses English only. Copy decisions must preserve clinical clarity, fast s
 - Prefer wrapping for critical instructions and clinical status text.
 - If truncation is unavoidable, preserve the most identifying information first.
 - Never rely on hover to reveal critical hidden text.
+- Copy must stay inside its container at every viewport size.
 
 ## Names, Time, And Identifiers
 

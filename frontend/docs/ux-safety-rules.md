@@ -47,6 +47,14 @@ This project is hospital software. Every interaction must reduce ambiguity and m
 - Prefer wrapping over truncation for critical instructions.
 - Preserve alignment when messages become longer because of clinical detail.
 
+## Responsive Safety
+
+- Responsive behavior is mandatory for every screen, not a later enhancement.
+- Layouts must adapt cleanly across mobile, tablet, laptop, desktop, and large monitors.
+- When space gets tight, content must wrap or stack before it clips, overlaps, or exits its container.
+- Buttons, pills, and badges must stay fully inside their cards and remain easy to tap.
+- A layout that only works at one screen size is not acceptable.
+
 ## Alerting And Urgency
 
 - Urgent items must be prominent without being visually chaotic.
