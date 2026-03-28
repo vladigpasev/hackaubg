@@ -1,3 +1,5 @@
+import type { UserRole } from './roles'
+
 export interface AuthCredentials {
   username: string
   password: string
@@ -5,17 +7,19 @@ export interface AuthCredentials {
 
 export interface AuthUser {
   username: string
+  role: UserRole
+  isTester: boolean
+  specialties: string[]
 }
 
-export interface AuthSession {
+export interface AuthResponse {
   user: AuthUser
-  signedInAt: string
 }
 
 export interface AuthContextValue {
   user: AuthUser | null
   isAuthenticated: boolean
   isHydrated: boolean
-  login: (credentials: AuthCredentials) => Promise<void>
-  logout: () => void
+  login: (credentials: AuthCredentials) => Promise<AuthUser>
+  logout: () => Promise<void>
 }

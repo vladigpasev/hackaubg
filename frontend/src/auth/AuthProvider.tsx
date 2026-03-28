@@ -1,84 +1,65 @@
-import { useState, type PropsWithChildren } from 'react'
+import { useEffect, useState, type PropsWithChildren } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AuthContext } from './authContext'
-import { loginWithCredentials } from './authClient'
-import type { AuthCredentials, AuthSession } from './types'
-
-const AUTH_STORAGE_KEY = 'hospital-frontend-auth'
-
-function isStoredSession(value: unknown): value is AuthSession {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const candidate = value as Record<string, unknown>
-  const user = candidate.user
-
-  if (!user || typeof user !== 'object') {
-    return false
-  }
-
-  const storedUser = user as Record<string, unknown>
-
-  return (
-    typeof storedUser.username === 'string' &&
-    storedUser.username.trim().length > 0 &&
-    typeof candidate.signedInAt === 'string'
-  )
-}
-
-function readStoredSession(): AuthSession | null {
-  const rawSession = window.localStorage.getItem(AUTH_STORAGE_KEY)
-
-  if (!rawSession) {
-    return null
-  }
-
-  try {
-    const parsedSession: unknown = JSON.parse(rawSession)
-
-    if (!isStoredSession(parsedSession)) {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY)
-      return null
-    }
-
-    return parsedSession
-  } catch {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY)
-    return null
-  }
-}
-
-function persistSession(session: AuthSession) {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
-}
-
-function clearStoredSession() {
-  window.localStorage.removeItem(AUTH_STORAGE_KEY)
-}
+import { fetchCurrentUser, loginWithCredentials, logoutFromServer } from './authClient'
+import type { AuthCredentials, AuthUser } from './types'
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const navigate = useNavigate()
-  const [session, setSession] = useState<AuthSession | null>(() => readStoredSession())
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [isHydrated, setIsHydrated] = useState(false)
+
+  useEffect(() => {
+    let isActive = true
+
+    async function hydrateSession() {
+      try {
+        const currentUser = await fetchCurrentUser()
+
+        if (isActive) {
+          setUser(currentUser)
+        }
+      } catch {
+        if (isActive) {
+          setUser(null)
+        }
+      } finally {
+        if (isActive) {
+          setIsHydrated(true)
+        }
+      }
+    }
+
+    void hydrateSession()
+
+    return () => {
+      isActive = false
+    }
+  }, [])
 
   async function login(credentials: AuthCredentials) {
-    const nextSession = await loginWithCredentials(credentials)
-    persistSession(nextSession)
-    setSession(nextSession)
+    const nextUser = await loginWithCredentials(credentials)
+    setUser(nextUser)
+    setIsHydrated(true)
+    return nextUser
   }
 
-  function logout() {
-    clearStoredSession()
-    setSession(null)
-    navigate('/login', { replace: true })
+  async function logout() {
+    try {
+      await logoutFromServer()
+    } finally {
+      setUser(null)
+      setIsHydrated(true)
+      navigate('/login', { replace: true })
+    }
   }
 
   return (
     <AuthContext.Provider
       value={{
-        user: session?.user ?? null,
-        isAuthenticated: session !== null,
-        isHydrated: true,
+        user,
+        isAuthenticated: user !== null,
+        isHydrated,
         login,
         logout,
       }}

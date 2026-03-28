@@ -1,3 +1,4 @@
+import { formatRoleLabel } from '../auth/roles'
 import { useAuth } from '../auth/useAuth'
 
 const quickActions = [
@@ -77,6 +78,34 @@ const statusToneClasses = {
 
 export function WorkspacePage() {
   const { logout, user } = useAuth()
+  const activeUser = user!
+  const roleLabel = formatRoleLabel(activeUser.role)
+  const roleContent = {
+    registry: {
+      badge: 'Registry workspace',
+      title: 'A clear intake and handoff shell for registry staff.',
+      description:
+        'This role-focused shell keeps admissions, transfer coordination, and the next safe action close together.',
+      primaryAction: 'Start intake',
+    },
+    nurse: {
+      badge: 'Nurse workspace',
+      title: 'A calm nursing workspace with clear priorities and minimal clutter.',
+      description:
+        'The page favors handoff visibility, active task review, and fast access to the next patient-facing action.',
+      primaryAction: 'Open worklist',
+    },
+    doctor: {
+      badge: activeUser.isTester ? 'Doctor tester workspace' : 'Doctor workspace',
+      title: activeUser.isTester
+        ? 'A focused doctor tester shell for labs, scans, and clinical review.'
+        : 'A doctor workspace that keeps urgent decisions and referrals obvious.',
+      description: activeUser.isTester
+        ? 'Tester doctors can validate investigations and devices without a separate auth flow or route tree.'
+        : 'The shell stays decision-oriented so the highest priority case and escalation path remain easy to scan.',
+      primaryAction: activeUser.isTester ? 'Review investigations' : 'Review cases',
+    },
+  }[activeUser.role]
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-primary)]">
@@ -86,14 +115,13 @@ export function WorkspacePage() {
             <div className="min-w-0 max-w-3xl">
               <div className="inline-flex max-w-full flex-wrap items-center gap-3 rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-4 py-2 text-sm font-semibold tracking-[0.18em] text-[var(--teal-strong)] uppercase">
                 <span className="h-2.5 w-2.5 rounded-full bg-[var(--teal)]" />
-                Protected hospital workspace
+                {roleContent.badge}
               </div>
               <h1 className="mt-5 max-w-3xl text-4xl font-semibold leading-tight break-words sm:text-5xl">
-                A calm, simple clinical workspace with large actions and clear priority.
+                {roleContent.title}
               </h1>
               <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)] sm:text-lg">
-                The current screen remains a static example of the frontend direction. Authentication
-                now protects the route so future backend integration can plug into a stable UI shell.
+                {roleContent.description}
               </p>
             </div>
 
@@ -115,19 +143,38 @@ export function WorkspacePage() {
                   Signed in
                 </p>
                 <p className="mt-2 text-base font-semibold text-[var(--text-primary)]">
-                  {user?.username}
+                  {activeUser.username}
                 </p>
                 <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-                  Temporary frontend auth is active until the backend login contract is connected.
+                  {roleLabel} access is active through the backend JWT session.
                 </p>
+                {activeUser.role === 'doctor' ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {activeUser.isTester ? (
+                      <span className="inline-flex items-center rounded-full border border-[var(--amber-border)] bg-[var(--amber-soft)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--amber-text)]">
+                        Tester
+                      </span>
+                    ) : null}
+                    {activeUser.specialties.map((specialty) => (
+                      <span
+                        key={specialty}
+                        className="inline-flex items-center rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--teal-strong)]"
+                      >
+                        {specialty}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <button className="min-h-14 rounded-[1.2rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-5 text-base font-semibold text-white shadow-[0_18px_40px_rgba(15,143,138,0.22)] transition hover:bg-[var(--teal-strong)]">
-                Start intake
+                {roleContent.primaryAction}
               </button>
               <button
                 className="min-h-12 rounded-[1.05rem] border border-[var(--border-soft)] bg-white px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
-                onClick={logout}
+                onClick={() => {
+                  void logout()
+                }}
                 type="button"
               >
                 Sign out

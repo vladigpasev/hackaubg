@@ -1,39 +1,33 @@
-# Hospital Frontend Foundation
+# Hospital Frontend
 
-This frontend is intentionally in a documentation-first setup phase. The app stack stays minimal while the product direction, UX rules, and contributor guidance are locked down for future implementation.
+React + Vite frontend for the MVP hospital demo.
 
-## Current Scope
+## Environment
 
-- Product direction: simple, clinically calm, English-only for the MVP, and hard to misuse.
-- Phase boundary: no runtime screens, routes, or business logic are being implemented yet.
-
-## Source Of Truth
-
-- `AGENTS.md`
-- `docs/design-system.md`
-- `docs/ux-safety-rules.md`
-- `docs/content-localization.md`
-
-## What This Phase Defines
-
-- The clinical light visual direction.
-- The button sizing and safe interaction constraints.
-- The MVP English copy expectations.
-- The rules future contributors and agents must follow when implementing UI.
-
-## What This Phase Does Not Do
-
-- It does not implement routes or page shells.
-- It does not add a component library.
-- It does not add design tokens in code.
-- It does not change the current starter app beyond providing the documentation foundation.
-
-## Working In This Repo
-
-Run the existing frontend commands from `frontend/`:
+Copy `.env.example` to `.env` and point the frontend to the backend:
 
 ```bash
+VITE_API_BASE_URL="http://localhost:3000"
+```
+
+## Auth Flow
+
+- `/login` is public-only.
+- `/registry`, `/nurse`, and `/doctor` are protected role routes.
+- The frontend hydrates auth state from `GET /auth/me`.
+- Login and logout use the backend REST API with `credentials: 'include'`.
+- The JWT stays in an `HttpOnly` cookie and is never stored in browser storage.
+
+## Run
+
+```bash
+npm install
 npm run dev
+```
+
+## Build and Lint
+
+```bash
 npm run build
 npm run lint
 ```

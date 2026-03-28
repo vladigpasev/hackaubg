@@ -6,3 +6,13 @@ generator client {
 datasource db {
   provider = "sqlite"
 }
+
+model User {
+  username     String  @id
+  passwordHash String
+  role         String
+  isTester     Boolean @default(false)
+  specialties  String  @default("[]")
+
+  @@map("users")
+}

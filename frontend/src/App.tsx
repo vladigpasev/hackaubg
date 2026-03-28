@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { AuthHomeRedirect } from './auth/AuthHomeRedirect'
 import { ProtectedRoute } from './auth/ProtectedRoute'
 import { PublicOnlyRoute } from './auth/PublicOnlyRoute'
 import { LoginPage } from './pages/LoginPage'
@@ -11,8 +12,18 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
       </Route>
 
-      <Route element={<ProtectedRoute />}>
-        <Route path="/" element={<WorkspacePage />} />
+      <Route path="/" element={<AuthHomeRedirect />} />
+
+      <Route element={<ProtectedRoute allowedRoles={['registry']} />}>
+        <Route path="/registry" element={<WorkspacePage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute allowedRoles={['nurse']} />}>
+        <Route path="/nurse" element={<WorkspacePage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute allowedRoles={['doctor']} />}>
+        <Route path="/doctor" element={<WorkspacePage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

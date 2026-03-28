@@ -1,9 +1,10 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { AuthPendingScreen } from './AuthPendingScreen'
+import { getRoleHomePath } from './roles'
 import { useAuth } from './useAuth'
 
 export function PublicOnlyRoute() {
-  const { isAuthenticated, isHydrated } = useAuth()
+  const { isAuthenticated, isHydrated, user } = useAuth()
 
   if (!isHydrated) {
     return (
@@ -15,7 +16,7 @@ export function PublicOnlyRoute() {
   }
 
   if (isAuthenticated) {
-    return <Navigate to="/" replace />
+    return <Navigate to={getRoleHomePath(user!.role)} replace />
   }
 
   return <Outlet />

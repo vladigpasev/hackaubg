@@ -16,8 +16,13 @@ export class RedisService implements OnModuleInit, OnApplicationShutdown {
       ? createClient({ url: process.env.REDIS_URL })
       : null;
 
-    this.client?.on('error', (error) => {
-      this.logger.warn(`Redis connection error: ${error.message}`);
+    this.client?.on('error', (error: unknown) => {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown Redis connection error';
+
+      this.logger.warn(`Redis connection error: ${message}`);
     });
   }
 
@@ -31,7 +36,9 @@ export class RedisService implements OnModuleInit, OnApplicationShutdown {
       await this.client.connect();
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Unknown Redis connection error';
+        error instanceof Error
+          ? error.message
+          : 'Unknown Redis connection error';
       this.logger.warn(`Unable to connect to Redis: ${message}`);
     }
   }

@@ -51,6 +51,8 @@ pids
 *.pid
 *.seed
 *.pid.lock
+*.db
+*.db-journal
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
