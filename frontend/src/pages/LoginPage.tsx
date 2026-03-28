@@ -118,17 +118,17 @@ export function LoginPage() {
         <section className="w-full max-w-xl rounded-[2rem] border border-[var(--border-soft)] bg-white/95 p-6 shadow-[0_24px_80px_rgba(21,54,74,0.08)] backdrop-blur sm:p-8">
           <div className="inline-flex max-w-full flex-wrap items-center gap-3 rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-4 py-2 text-sm font-semibold tracking-[0.18em] text-[var(--teal-strong)] uppercase">
             <span className="h-2.5 w-2.5 rounded-full bg-[var(--teal)]" />
-            Secure demo sign-in
+            SECURE Sign-In
           </div>
 
           <h1 className="mt-5 text-4xl font-semibold leading-tight break-words sm:text-5xl">
-            Sign in to continue to the clinical workspace.
+            Sign in to continue.
           </h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)] sm:text-lg">
+          {/* <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)] sm:text-lg">
             The login form calls the backend REST API and keeps the session in a secure HttpOnly
             cookie. Use one of the seeded demo users configured on the server.
-          </p>
-
+          </p> */}
+{/* 
           <div className="mt-6 rounded-[1.5rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4">
             <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
               Demo behavior
@@ -137,7 +137,7 @@ export function LoginPage() {
               Successful sign-in routes each role to its own guarded workspace path. If a session
               already exists, the public login route redirects to that user&apos;s role home.
             </p>
-          </div>
+          </div> */}
 
           <form className="mt-8 space-y-5" noValidate onSubmit={handleSubmit}>
             <div>

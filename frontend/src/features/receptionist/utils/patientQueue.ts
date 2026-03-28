@@ -4,7 +4,7 @@ import type {
   PatientDoctorTask,
   PatientTask,
   PatientTestRequest,
-  TriageCode,
+  TriageState,
   WorkspaceNotification,
 } from '../types/patient'
 
@@ -18,7 +18,6 @@ export interface PatientOverviewSummary {
 }
 
 export interface DoctorQueueItem {
-  code: TriageCode
   createdAt: string
   id: string
   kind: 'doctor_task' | 'test_item'
@@ -32,6 +31,7 @@ export interface DoctorQueueItem {
   testItemId: string | null
   testRequestId: string | null
   title: string
+  triageState: TriageState
 }
 
 export type PatientDisplayStatus =
@@ -46,13 +46,13 @@ function timestamp(value: string) {
   return new Date(value).getTime()
 }
 
-export function getTriagePriority(code: TriageCode) {
-  switch (code) {
-    case 'yellow':
+export function getTriagePriority(triageState: TriageState) {
+  switch (triageState) {
+    case 'RED':
       return 0
-    case 'green':
+    case 'YELLOW':
       return 1
-    case 'unknown':
+    case 'GREEN':
       return 2
   }
 }
@@ -123,19 +123,12 @@ export function getPatientDisplayStatus(patient: Patient): PatientDisplayStatus 
   return 'done'
 }
 
-export function getPatientPriorityCode(patient: Patient): TriageCode | null {
-  const candidateCodes = [
-    ...getActiveDoctorTasks(patient).map((task) => task.code),
-    ...getTestRequests(patient)
-      .filter((request) => request.status !== 'returned')
-      .map((request) => request.code),
-  ]
-
-  if (candidateCodes.length === 0) {
+export function getPatientPriorityCode(patient: Patient): TriageState | null {
+  if (patient.checkedOutAt) {
     return null
   }
 
-  return [...candidateCodes].sort((left, right) => getTriagePriority(left) - getTriagePriority(right))[0]
+  return patient.triageState
 }
 
 export function sortPatientsForOverview(patients: Patient[]) {
@@ -149,17 +142,10 @@ export function sortPatientsForOverview(patients: Patient[]) {
       return leftIsClosed ? 1 : -1
     }
 
-    const leftPriorityCode = getPatientPriorityCode(left)
-    const rightPriorityCode = getPatientPriorityCode(right)
+    const priorityDelta = getTriagePriority(left.triageState) - getTriagePriority(right.triageState)
 
-    if (leftPriorityCode && rightPriorityCode) {
-      const priorityDelta = getTriagePriority(leftPriorityCode) - getTriagePriority(rightPriorityCode)
-
-      if (priorityDelta !== 0) {
-        return priorityDelta
-      }
-    } else if (leftPriorityCode || rightPriorityCode) {
-      return leftPriorityCode ? -1 : 1
+    if (priorityDelta !== 0) {
+      return priorityDelta
     }
 
     const admittedDelta = timestamp(left.admittedAt) - timestamp(right.admittedAt)
@@ -219,14 +205,14 @@ export function getDoctorQueueLoad(patients: Patient[], doctorId: string) {
 }
 
 function compareQueuePriority(
-  leftCode: TriageCode,
+  leftTriageState: TriageState,
   leftCreatedAt: string,
   leftId: string,
-  rightCode: TriageCode,
+  rightTriageState: TriageState,
   rightCreatedAt: string,
   rightId: string,
 ) {
-  const priorityDelta = getTriagePriority(leftCode) - getTriagePriority(rightCode)
+  const priorityDelta = getTriagePriority(leftTriageState) - getTriagePriority(rightTriageState)
 
   if (priorityDelta !== 0) {
     return priorityDelta
@@ -255,7 +241,6 @@ export function getDoctorQueueItems(patients: Patient[], doctorId: string) {
       }
 
       items.push({
-        code: task.code,
         createdAt: task.createdAt,
         id: `${patient.id}:${task.id}`,
         kind: 'doctor_task',
@@ -269,6 +254,7 @@ export function getDoctorQueueItems(patients: Patient[], doctorId: string) {
         testItemId: null,
         testRequestId: null,
         title: task.type === 'return_to_doctor_task' ? `Return to ${task.specialty}` : task.specialty,
+        triageState: patient.triageState,
       })
     }
 
@@ -283,7 +269,6 @@ export function getDoctorQueueItems(patients: Patient[], doctorId: string) {
         }
 
         items.push({
-          code: request.code,
           createdAt: item.createdAt,
           id: `${patient.id}:${request.id}:${item.id}`,
           kind: 'test_item',
@@ -297,6 +282,7 @@ export function getDoctorQueueItems(patients: Patient[], doctorId: string) {
           testItemId: item.id,
           testRequestId: request.id,
           title: item.testName,
+          triageState: patient.triageState,
         })
       }
     }
@@ -312,10 +298,10 @@ export function getDoctorQueueItems(patients: Patient[], doctorId: string) {
     }
 
     return compareQueuePriority(
-      left.code,
+      left.triageState,
       left.createdAt,
       left.id,
-      right.code,
+      right.triageState,
       right.createdAt,
       right.id,
     )

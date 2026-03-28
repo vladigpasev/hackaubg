@@ -5,12 +5,14 @@ import { TriageBadge } from '../features/receptionist/components/TriageBadge'
 import { useHospitalState } from '../features/receptionist/hooks/useHospitalState'
 import {
   addDoctorTask,
+  buildSpecialtyCatalog,
   checkoutPatient,
   createPatient,
   getPatientDoctorLabel,
   getPatientOpenTaskCount,
   getPatientPendingTestCount,
   getPatientReadyReturnCount,
+  prefetchPatientDetails,
   getUnreadNotificationCount,
   getVisibleNotifications,
   markNotificationRead,
@@ -27,7 +29,7 @@ import type {
   Patient,
   PatientDoctorTask,
   PatientMutationActor,
-  TriageCode,
+  TriageState,
   UpdatePatientCoreInput,
   WorkspaceNotification,
 } from '../features/receptionist/types/patient'
@@ -79,10 +81,9 @@ function formatCompactTime(value: string) {
   return compactTimeFormatter.format(new Date(value))
 }
 
-function buildTaskDraftRow(code: TriageCode = 'unknown', specialty = ''): TaskDraftRow {
+function buildTaskDraftRow(specialty = ''): TaskDraftRow {
   return {
-    code,
-    id: `${code}-${specialty}-${crypto.randomUUID()}`,
+    id: `${specialty}-${crypto.randomUUID()}`,
     specialty,
   }
 }
@@ -144,7 +145,7 @@ function sortTasksForDisplay(tasks: PatientDoctorTask[]) {
       return left.status === 'done' ? 1 : -1
     }
 
-    const priorityDelta = getTriagePriority(left.code) - getTriagePriority(right.code)
+    const priorityDelta = getTriagePriority(left.triageState) - getTriagePriority(right.triageState)
 
     if (priorityDelta !== 0) {
       return priorityDelta
@@ -184,35 +185,35 @@ function CodeSelector({
   value,
 }: {
   disabled?: boolean
-  onChange: (value: TriageCode) => void
-  value: TriageCode
+  onChange: (value: TriageState) => void
+  value: TriageState
 }) {
   return (
     <div className="flex flex-wrap gap-2">
-      {(['unknown', 'green', 'yellow'] as const).map((code) => {
-        const isActive = value === code
+      {(['GREEN', 'YELLOW', 'RED'] as const).map((triageState) => {
+        const isActive = value === triageState
         const toneClass =
-          code === 'green'
+          triageState === 'GREEN'
             ? isActive
               ? 'border-[var(--green-border)] bg-[var(--green-soft)] text-[var(--green-text)]'
               : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-            : code === 'yellow'
+            : triageState === 'YELLOW'
               ? isActive
                 ? 'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]'
                 : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
               : isActive
-                ? 'border-[var(--teal-border)] bg-[var(--teal-soft)] text-[var(--teal-strong)]'
+                ? 'border-[var(--red-border)] bg-[var(--red-soft)] text-[var(--red-text)]'
                 : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
 
         return (
           <button
-            key={code}
+            key={triageState}
             className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${toneClass}`}
             disabled={disabled}
-            onClick={() => onChange(code)}
+            onClick={() => onChange(triageState)}
             type="button"
           >
-            {code}
+            {triageState}
           </button>
         )
       })}
@@ -276,9 +277,12 @@ function RegisterPatientDialog({
   const [name, setName] = useState('')
   const [notes, setNotes] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
+  const [triageState, setTriageState] = useState<TriageState>('GREEN')
 
   const canSubmit =
-    name.trim().length >= 2 && initialTasks.every((task) => task.specialty.trim().length > 0)
+    name.trim().length >= 2 &&
+    phoneNumber.trim().length > 0 &&
+    initialTasks.every((task) => task.specialty.trim().length > 0)
 
   return (
     <Overlay onClose={onClose} open={open} title="New patient">
@@ -299,11 +303,17 @@ function RegisterPatientDialog({
             <input
               className="mt-1.5 min-h-11 w-full rounded-[1rem] border border-[var(--border-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
               onChange={(event) => setPhoneNumber(event.target.value)}
-              placeholder="Optional"
+              placeholder="Required"
               type="text"
               value={phoneNumber}
             />
           </label>
+          <div className="block text-sm font-medium text-[var(--text-secondary)]">
+            Triage
+            <div className="mt-2">
+              <CodeSelector onChange={setTriageState} value={triageState} />
+            </div>
+          </div>
           <label className="block text-sm font-medium text-[var(--text-secondary)]">
             Intake note
             <textarea
@@ -352,17 +362,7 @@ function RegisterPatientDialog({
                 placeholder="Search specialty"
                 value={task.specialty}
               />
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <CodeSelector
-                  onChange={(code) =>
-                    setInitialTasks((current) =>
-                      current.map((candidate, candidateIndex) =>
-                        candidateIndex === index ? { ...candidate, code } : candidate,
-                      ),
-                    )
-                  }
-                  value={task.code}
-                />
+              <div className="mt-3 flex items-center justify-end gap-3">
                 {initialTasks.length > 1 ? (
                   <button
                     className="rounded-full border border-[var(--red-border)] px-3 py-1.5 text-xs font-semibold text-[var(--red-text)] transition hover:bg-[var(--red-soft)]"
@@ -393,10 +393,11 @@ function RegisterPatientDialog({
           disabled={isSubmitting || !canSubmit}
           onClick={() =>
             void onSubmit({
-              initialTasks: initialTasks.map(({ code, specialty }) => ({ code, specialty })),
+              initialTasks: initialTasks.map(({ specialty }) => ({ specialty })),
               name,
               notes,
               phoneNumber,
+              triageState,
             })
           }
           type="button"
@@ -504,7 +505,7 @@ function PatientDetailsDialog({
   onClose: () => void
   onMarkTestDone: (requestId: string, testItemId: string) => Promise<void>
   onSaveCore: (values: UpdatePatientCoreInput) => Promise<void>
-  onUpdateTask: (taskId: string, values: { code: TriageCode; specialty: string }) => Promise<void>
+  onUpdateTask: (taskId: string, values: { specialty: string }) => Promise<void>
   open: boolean
   patient: Patient | null
   specialtyOptions: Array<{ id: string; keywords: string[]; label: string }>
@@ -512,13 +513,13 @@ function PatientDetailsDialog({
   const [coreName, setCoreName] = useState(patient?.name ?? '')
   const [coreNote, setCoreNote] = useState('')
   const [corePhone, setCorePhone] = useState(patient?.phoneNumber ?? '')
-  const [newTaskCode, setNewTaskCode] = useState<TriageCode>('unknown')
+  const [coreTriageState, setCoreTriageState] = useState<TriageState>(patient?.triageState ?? 'GREEN')
   const [newTaskSpecialty, setNewTaskSpecialty] = useState('')
-  const [taskForms, setTaskForms] = useState<Record<string, { code: TriageCode; specialty: string }>>(
+  const [taskForms, setTaskForms] = useState<Record<string, { specialty: string }>>(
     () =>
       patient
         ? Object.fromEntries(
-            getDoctorTasks(patient).map((task) => [task.id, { code: task.code, specialty: task.specialty }]),
+            getDoctorTasks(patient).map((task) => [task.id, { specialty: task.specialty }]),
           )
         : {},
   )
@@ -535,7 +536,7 @@ function PatientDetailsDialog({
     <Overlay onClose={onClose} open={open} title={patient.name}>
       <div className="space-y-5">
         <div className="flex flex-wrap items-center gap-2">
-          {getPatientPriorityCode(patient) ? <TriageBadge triageCode={getPatientPriorityCode(patient)!} /> : null}
+          {getPatientPriorityCode(patient) ? <TriageBadge triageState={getPatientPriorityCode(patient)!} /> : null}
           <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusStyles(displayStatus)}`}>
             {statusLabel(displayStatus)}
           </span>
@@ -573,6 +574,12 @@ function PatientDetailsDialog({
                 value={coreNote}
               />
             </label>
+            <div className="block text-sm font-medium text-[var(--text-secondary)]">
+              Triage
+              <div className="mt-2">
+                <CodeSelector disabled={isSubmitting} onChange={setCoreTriageState} value={coreTriageState} />
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span>Admitted {formatAdmittedAt(patient.admittedAt)}</span>
               <span className="text-[var(--border-soft)]">•</span>
@@ -580,8 +587,15 @@ function PatientDetailsDialog({
             </div>
             <button
               className="rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
-              disabled={isSubmitting || coreName.trim().length < 2}
-              onClick={() => void onSaveCore({ name: coreName, note: coreNote, phoneNumber: corePhone })}
+              disabled={isSubmitting || coreName.trim().length < 2 || corePhone.trim().length === 0}
+              onClick={() =>
+                void onSaveCore({
+                  name: coreName,
+                  note: coreNote,
+                  phoneNumber: corePhone,
+                  triageState: coreTriageState,
+                })
+              }
               type="button"
             >
               Save patient
@@ -591,7 +605,7 @@ function PatientDetailsDialog({
           <div className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-semibold text-[var(--text-primary)]">Add specialty</p>
-              <CodeSelector onChange={setNewTaskCode} value={newTaskCode} />
+              <TriageBadge triageState={patient.triageState} />
             </div>
             <div className="mt-3">
               <TypeaheadInput
@@ -606,10 +620,10 @@ function PatientDetailsDialog({
             <button
               className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
               disabled={isSubmitting || newTaskSpecialty.trim().length === 0}
-              onClick={() => void onAddTask({ code: newTaskCode, specialty: newTaskSpecialty })}
+              onClick={() => void onAddTask({ specialty: newTaskSpecialty })}
               type="button"
             >
-              Add task
+              Add queue item
             </button>
           </div>
         </div>
@@ -621,7 +635,7 @@ function PatientDetailsDialog({
           </div>
           <div className="space-y-3">
             {doctorTasks.map((task) => {
-              const formValues = taskForms[task.id] ?? { code: task.code, specialty: task.specialty }
+              const formValues = taskForms[task.id] ?? { specialty: task.specialty }
 
               return (
                 <article
@@ -629,7 +643,7 @@ function PatientDetailsDialog({
                   className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <TriageBadge triageCode={task.code} />
+                    <TriageBadge triageState={task.triageState} />
                     <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
                       {taskStatusLabel(task.status)}
                     </span>
@@ -645,30 +659,20 @@ function PatientDetailsDialog({
                       onChange={(value) =>
                         setTaskForms((current) => ({
                           ...current,
-                          [task.id]: { ...formValues, specialty: value },
+                          [task.id]: { specialty: value },
                         }))
                       }
                       onSelect={(value) =>
                         setTaskForms((current) => ({
                           ...current,
-                          [task.id]: { ...formValues, specialty: value },
+                          [task.id]: { specialty: value },
                         }))
                       }
                       options={specialtyOptions}
                       placeholder="Search specialty"
                       value={formValues.specialty}
                     />
-                    <div className="flex min-w-0 flex-col justify-between gap-3">
-                      <CodeSelector
-                        disabled={task.status === 'done'}
-                        onChange={(code) =>
-                          setTaskForms((current) => ({
-                            ...current,
-                            [task.id]: { ...formValues, code },
-                          }))
-                        }
-                        value={formValues.code}
-                      />
+                    <div className="flex min-w-0 flex-col justify-end gap-3">
                       <div className="text-xs text-[var(--text-muted)]">
                         {getDoctorLabelById(doctors, task.assignedDoctorId)}
                       </div>
@@ -680,12 +684,12 @@ function PatientDetailsDialog({
                       disabled={
                         isSubmitting ||
                         formValues.specialty.trim().length === 0 ||
-                        (formValues.specialty === task.specialty && formValues.code === task.code)
+                        formValues.specialty === task.specialty
                       }
                       onClick={() => void onUpdateTask(task.id, formValues)}
                       type="button"
                     >
-                      Update task
+                      Update queue item
                     </button>
                   ) : null}
                 </article>
@@ -711,7 +715,7 @@ function PatientDetailsDialog({
                   className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <TriageBadge triageCode={request.code} />
+                    <TriageBadge triageState={request.triageState} />
                     <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
                       {request.status === 'pending'
                         ? 'Pending'
@@ -824,19 +828,7 @@ export function PatientQueueRolePage({
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
 
   const searchableSpecialties = useMemo(
-    () =>
-      doctors.length > 0
-        ? Array.from(
-            new Map(
-              doctors
-                .flatMap((doctor) => doctor.specialties)
-                .map((label) => [
-                  label.toLowerCase(),
-                  { id: `doctor-specialty-${label.toLowerCase()}`, keywords: [], label },
-                ]),
-            ).values(),
-          )
-        : [],
+    () => buildSpecialtyCatalog(doctors),
     [doctors],
   )
   const selectedPatient = rawPatients.find((patient) => patient.id === selectedPatientId) ?? null
@@ -863,6 +855,14 @@ export function PatientQueueRolePage({
       setSelectedPatientId(null)
     }
   }, [rawPatients, selectedPatientId])
+
+  useEffect(() => {
+    if (!selectedPatientId) {
+      return
+    }
+
+    void prefetchPatientDetails(selectedPatientId)
+  }, [selectedPatientId])
 
   const actor: PatientMutationActor = {
     role: activeUser.role,
@@ -1009,7 +1009,7 @@ export function PatientQueueRolePage({
                           <h2 className="text-base font-semibold break-words text-[var(--text-primary)]">
                             {patient.name}
                           </h2>
-                          {primaryCode ? <TriageBadge triageCode={primaryCode} /> : null}
+                          {primaryCode ? <TriageBadge triageState={primaryCode} /> : null}
                           <span
                             className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusStyles(displayStatus)}`}
                           >

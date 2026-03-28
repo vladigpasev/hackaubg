@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { AuthUser } from '../../../auth/types'
-import { ensureDoctorProfile, getHospitalSnapshot } from '../services/mockPatientApi'
+import {
+  getHospitalSnapshot,
+  subscribeToHospitalStream,
+} from '../services/mockPatientApi'
 import {
   doctorProfilesAtom,
   isHospitalStateHydratedAtom,
@@ -72,44 +75,24 @@ export function useHospitalState(activeUser: AuthUser) {
   }, [activeUser, isHydrated, reloadRequest, replaceHospitalState])
 
   useEffect(() => {
-    let isActive = true
+    if (!isHydrated) {
+      return
+    }
 
-    async function ensureRuntimeDoctor() {
-      if (activeUser.role !== 'doctor' || !isHydrated) {
-        return
-      }
-
-      if (doctors.some((doctor) => doctor.username === activeUser.username)) {
-        return
-      }
-
-      try {
-        const snapshot = await ensureDoctorProfile(patients, doctors, notifications, activeUser)
-
-        if (!isActive) {
-          return
-        }
-
+    const unsubscribe = subscribeToHospitalStream(
+      activeUser,
+      doctors,
+      (snapshot) => {
         replaceHospitalState(snapshot)
-      } catch (error) {
-        if (!isActive) {
-          return
-        }
+        setLoadError(null)
+      },
+      (error) => {
+        setLoadError(error.message)
+      },
+    )
 
-        setLoadError(
-          error instanceof Error
-            ? error.message
-            : 'The doctor profile could not be prepared right now. Please try again.',
-        )
-      }
-    }
-
-    void ensureRuntimeDoctor()
-
-    return () => {
-      isActive = false
-    }
-  }, [activeUser, doctors, isHydrated, notifications, patients, replaceHospitalState])
+    return unsubscribe
+  }, [activeUser, doctors, isHydrated, replaceHospitalState])
 
   function replaceSnapshot(snapshot: HospitalSnapshot) {
     replaceHospitalState(snapshot)

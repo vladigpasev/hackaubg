@@ -10,20 +10,20 @@ import {
   completeDoctorTask,
   createTestRequest,
   getTestCatalog,
+  prefetchPatientDetails,
   getUnreadNotificationCount,
   getVisibleNotifications,
   markDoctorTaskNotHere,
   markNotificationRead,
   markTestItemDone,
   startDoctorTask,
-  updateDoctorTask,
 } from '../features/receptionist/services/mockPatientApi'
 import type {
   HospitalMutationResult,
   HospitalSnapshot,
   PatientDoctorTask,
   PatientMutationActor,
-  TriageCode,
+  QueueDraftItem,
   WorkspaceNotification,
 } from '../features/receptionist/types/patient'
 import {
@@ -118,7 +118,7 @@ function sortTasksForDisplay(tasks: PatientDoctorTask[]) {
       return left.status === 'done' ? 1 : -1
     }
 
-    const priorityDelta = getTriagePriority(left.code) - getTriagePriority(right.code)
+    const priorityDelta = getTriagePriority(left.triageState) - getTriagePriority(right.triageState)
 
     if (priorityDelta !== 0) {
       return priorityDelta
@@ -126,48 +126,6 @@ function sortTasksForDisplay(tasks: PatientDoctorTask[]) {
 
     return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
   })
-}
-
-function CodeSelector({
-  disabled,
-  onChange,
-  value,
-}: {
-  disabled?: boolean
-  onChange: (value: TriageCode) => void
-  value: TriageCode
-}) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {(['unknown', 'green', 'yellow'] as const).map((code) => {
-        const isActive = value === code
-        const toneClass =
-          code === 'green'
-            ? isActive
-              ? 'border-[var(--green-border)] bg-[var(--green-soft)] text-[var(--green-text)]'
-              : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-            : code === 'yellow'
-              ? isActive
-                ? 'border-[var(--amber-border)] bg-[var(--amber-soft)] text-[var(--amber-text)]'
-                : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-              : isActive
-                ? 'border-[var(--teal-border)] bg-[var(--teal-soft)] text-[var(--teal-strong)]'
-                : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
-
-        return (
-          <button
-            key={code}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${toneClass}`}
-            disabled={disabled}
-            onClick={() => onChange(code)}
-            type="button"
-          >
-            {code}
-          </button>
-        )
-      })}
-    </div>
-  )
 }
 
 function Overlay({
@@ -285,13 +243,10 @@ export function WorkspacePage() {
   const [feedback, setFeedback] = useState<FeedbackState | null>(null)
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false)
   const [selectedQueueItemId, setSelectedQueueItemId] = useState<string | null>(null)
-  const [newTaskCode, setNewTaskCode] = useState<TriageCode>('green')
-  const [newTaskSpecialty, setNewTaskSpecialty] = useState('')
   const [noteText, setNoteText] = useState('')
-  const [queuedTests, setQueuedTests] = useState<string[]>([])
-  const [selectedTestName, setSelectedTestName] = useState('')
-  const [taskCode, setTaskCode] = useState<TriageCode>('green')
-  const [taskSpecialty, setTaskSpecialty] = useState('')
+  const [draftKind, setDraftKind] = useState<'specialty' | 'test'>('specialty')
+  const [draftLabel, setDraftLabel] = useState('')
+  const [queueDrafts, setQueueDrafts] = useState<QueueDraftItem[]>([])
   const [testNote, setTestNote] = useState('')
 
   const activeDoctor = doctors.find((doctor) => doctor.username === activeUser.username) ?? null
@@ -343,16 +298,23 @@ export function WorkspacePage() {
   }, [queueItems, selectedQueueItemId])
 
   useEffect(() => {
-    if (!selectedDoctorTask) {
+    if (!selectedPatient?.id) {
       return
     }
 
-    setTaskCode(selectedDoctorTask.code)
-    setTaskSpecialty(selectedDoctorTask.specialty)
-    setQueuedTests([])
-    setSelectedTestName('')
+    void prefetchPatientDetails(selectedPatient.id)
+  }, [selectedPatient?.id])
+
+  useEffect(() => {
+    if (!selectedPatient?.id) {
+      return
+    }
+
+    setQueueDrafts([])
+    setDraftLabel('')
+    setDraftKind('specialty')
     setTestNote('')
-  }, [selectedDoctorTask])
+  }, [selectedPatient?.id])
 
   useEffect(() => {
     setNoteText('')
@@ -405,8 +367,82 @@ export function WorkspacePage() {
   const patientStatus = selectedPatient ? getPatientDisplayStatus(selectedPatient) : null
   const patientDoctorTasks = selectedPatient ? sortTasksForDisplay(getDoctorTasks(selectedPatient)) : []
   const patientTestRequests = selectedPatient ? getTestRequests(selectedPatient) : []
+  const sourceDoctorTask =
+    selectedDoctorTask ??
+    patientDoctorTasks.find(
+      (task) => task.assignedDoctorId === actor.doctorId && task.status !== 'done',
+    ) ??
+    null
   const isFirstPendingDoctorTask =
     selectedItem?.kind === 'doctor_task' && pendingItems[0]?.id === selectedItem.id
+  const selectedDraftOptions = draftKind === 'specialty' ? specialtyOptions : testOptions
+  const canAddDraft =
+    selectedPatient !== null &&
+    draftLabel.trim().length > 0 &&
+    !queueDrafts.some(
+      (draft) =>
+        draft.kind === draftKind &&
+        draft.label.trim().toLowerCase() === draftLabel.trim().toLowerCase(),
+    )
+
+  async function submitQueueDrafts() {
+    if (!selectedPatient) {
+      throw new Error('Select a patient first.')
+    }
+
+    if (queueDrafts.length === 0) {
+      throw new Error('Add at least one queue item.')
+    }
+
+    let latestResult: HospitalMutationResult | HospitalSnapshot | null = null
+    const specialtyDrafts = queueDrafts.filter((draft) => draft.kind === 'specialty')
+    const testDrafts = queueDrafts.filter((draft) => draft.kind === 'test')
+
+    for (const draft of specialtyDrafts) {
+      latestResult = await addDoctorTask(
+        patients,
+        doctors,
+        notifications,
+        selectedPatient.id,
+        { specialty: draft.label },
+        actor,
+      )
+    }
+
+    if (testDrafts.length > 0) {
+      const latestPatient =
+        latestResult && 'patient' in latestResult ? latestResult.patient : selectedPatient
+      const latestSourceDoctorTask =
+        sourceDoctorTask ??
+        getDoctorTasks(latestPatient).find(
+          (task) => task.assignedDoctorId === actor.doctorId && task.status !== 'done',
+        ) ??
+        null
+
+      if (!latestSourceDoctorTask) {
+        throw new Error('Select one of your assigned queue items before ordering tests.')
+      }
+
+      latestResult = await createTestRequest(
+        patients,
+        doctors,
+        notifications,
+        selectedPatient.id,
+        latestSourceDoctorTask.id,
+        {
+          note: testNote,
+          tests: testDrafts.map((draft) => draft.label),
+        },
+        actor,
+      )
+    }
+
+    if (!latestResult) {
+      throw new Error('No queue updates were submitted.')
+    }
+
+    return latestResult
+  }
 
   return (
     <>
@@ -522,7 +558,7 @@ export function WorkspacePage() {
                         <span className="rounded-full border border-[var(--border-soft)] bg-white px-2 py-0.5 text-[11px] font-semibold text-[var(--text-secondary)]">
                           {index + 1}
                         </span>
-                        <TriageBadge triageCode={item.code} />
+                        <TriageBadge triageState={item.triageState} />
                         {item.kind === 'test_item' ? (
                           <span className="rounded-full border border-[var(--purple-border)] bg-[var(--purple-soft)] px-2 py-0.5 text-[11px] font-semibold text-[var(--purple-text)]">
                             Test
@@ -543,15 +579,12 @@ export function WorkspacePage() {
             <section className="rounded-[1.2rem] border border-[var(--border-soft)] bg-white p-4 shadow-[0_16px_36px_rgba(19,56,78,0.05)]">
               {!selectedPatient || !selectedItem ? (
                 <div className="rounded-[1rem] bg-[var(--surface-soft)] px-4 py-10 text-center text-sm text-[var(--text-secondary)]">
-                  Select a task from the queue.
+                  Select a queue item.
                 </div>
               ) : (
                 <div className="space-y-5">
                   <div className="flex flex-wrap items-center gap-2">
-                    {selectedDoctorTask ? <TriageBadge triageCode={selectedDoctorTask.code} /> : null}
-                    {selectedItem.kind === 'test_item' && selectedTestRequest ? (
-                      <TriageBadge triageCode={selectedTestRequest.code} />
-                    ) : null}
+                    <TriageBadge triageState={selectedPatient.triageState} />
                     {patientStatus ? (
                       <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusStyles(patientStatus)}`}>
                         {statusLabel(patientStatus)}
@@ -590,10 +623,10 @@ export function WorkspacePage() {
                                       selectedDoctorTask.id,
                                       actor,
                                     ),
-                                  (result) =>
-                                    'patient' in result
-                                      ? `Now seeing ${result.patient.name}.`
-                                      : 'Task started.',
+                                (result) =>
+                                  'patient' in result
+                                    ? `Now seeing ${result.patient.name}.`
+                                      : 'Queue item started.',
                                 )
                               }
                               type="button"
@@ -617,10 +650,10 @@ export function WorkspacePage() {
                                       selectedDoctorTask.id,
                                       actor,
                                     ),
-                                  (result) =>
-                                    'patient' in result
+                                (result) =>
+                                  'patient' in result
                                       ? `${result.patient.name} moved behind the next task.`
-                                      : 'Task updated.',
+                                      : 'Queue item updated.',
                                 )
                               }
                               type="button"
@@ -645,13 +678,13 @@ export function WorkspacePage() {
                                   ),
                                 (result) =>
                                   'patient' in result
-                                    ? `${result.patient.name} task completed.`
-                                    : 'Task completed.',
+                                    ? `${result.patient.name} queue item completed.`
+                                    : 'Queue item completed.',
                               )
                             }
                             type="button"
                           >
-                            Mark task done
+                            Mark queue item done
                           </button>
                         </>
                       ) : null}
@@ -685,65 +718,6 @@ export function WorkspacePage() {
                   </div>
 
                   <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                    {selectedDoctorTask ? (
-                      <section className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Selected task</p>
-                        <div className="mt-3">
-                          <TypeaheadInput
-                            label="Specialty"
-                            onChange={setTaskSpecialty}
-                            onSelect={setTaskSpecialty}
-                            options={specialtyOptions}
-                            placeholder="Search specialty"
-                            value={taskSpecialty}
-                          />
-                        </div>
-                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                          <CodeSelector onChange={setTaskCode} value={taskCode} />
-                          <span className="text-xs text-[var(--text-muted)]">
-                            {getDoctorLabelById(doctors, selectedDoctorTask.assignedDoctorId)}
-                          </span>
-                        </div>
-                        <button
-                          className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
-                          disabled={
-                            busyKey !== null ||
-                            taskSpecialty.trim().length === 0 ||
-                            (taskSpecialty === selectedDoctorTask.specialty && taskCode === selectedDoctorTask.code)
-                          }
-                          onClick={() =>
-                            void runMutation(
-                              'update-task',
-                              () =>
-                                updateDoctorTask(
-                                  patients,
-                                  doctors,
-                                  notifications,
-                                  selectedPatient.id,
-                                  selectedDoctorTask.id,
-                                  { code: taskCode, specialty: taskSpecialty },
-                                ),
-                              (result) =>
-                                'patient' in result ? `${result.patient.name} task updated.` : 'Task updated.',
-                            )
-                          }
-                          type="button"
-                        >
-                          Update task
-                        </button>
-                      </section>
-                    ) : (
-                      <section className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Selected test</p>
-                        <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                          {selectedTestItem?.testName}
-                        </p>
-                        <p className="mt-1 text-xs text-[var(--text-muted)]">
-                          {selectedTestItem?.testerSpecialty} • {getDoctorLabelById(doctors, selectedTestItem?.assignedDoctorId ?? null)}
-                        </p>
-                      </section>
-                    )}
-
                     <section className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
                       <p className="text-sm font-semibold text-[var(--text-primary)]">Add note</p>
                       <textarea
@@ -768,76 +742,59 @@ export function WorkspacePage() {
                         Save note
                       </button>
                     </section>
-                  </div>
 
-                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                     <section className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Add specialty</p>
-                        <CodeSelector onChange={setNewTaskCode} value={newTaskCode} />
+                        <p className="text-sm font-semibold text-[var(--text-primary)]">Queue composer</p>
+                        <TriageBadge triageState={selectedPatient.triageState} />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                            draftKind === 'specialty'
+                              ? 'border-[var(--teal-border)] bg-[var(--teal-soft)] text-[var(--teal-strong)]'
+                              : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
+                          }`}
+                          onClick={() => setDraftKind('specialty')}
+                          type="button"
+                        >
+                          Specialty
+                        </button>
+                        <button
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                            draftKind === 'test'
+                              ? 'border-[var(--purple-border)] bg-[var(--purple-soft)] text-[var(--purple-text)]'
+                              : 'border-[var(--border-soft)] bg-white text-[var(--text-secondary)]'
+                          }`}
+                          onClick={() => setDraftKind('test')}
+                          type="button"
+                        >
+                          Test
+                        </button>
                       </div>
                       <div className="mt-3">
                         <TypeaheadInput
-                          label="Specialty"
-                          onChange={setNewTaskSpecialty}
-                          onSelect={setNewTaskSpecialty}
-                          options={specialtyOptions}
-                          placeholder="Search specialty"
-                          value={newTaskSpecialty}
-                        />
-                      </div>
-                      <button
-                        className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
-                        disabled={busyKey !== null || newTaskSpecialty.trim().length === 0}
-                        onClick={() =>
-                          void runMutation(
-                            'add-specialty',
-                            () =>
-                              addDoctorTask(
-                                patients,
-                                doctors,
-                                notifications,
-                                selectedPatient.id,
-                                { code: newTaskCode, specialty: newTaskSpecialty },
-                                actor,
-                              ),
-                            (result) =>
-                              'patient' in result
-                                ? `${result.patient.name} added to another doctor queue.`
-                                : 'Task added.',
-                          ).then(() => {
-                            setNewTaskSpecialty('')
-                            setNewTaskCode('green')
-                          })
-                        }
-                        type="button"
-                      >
-                        Add task
-                      </button>
-                    </section>
-
-                    <section className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3">
-                      <p className="text-sm font-semibold text-[var(--text-primary)]">Order tests</p>
-                      <div className="mt-3">
-                        <TypeaheadInput
-                          label="Test"
-                          onChange={setSelectedTestName}
-                          onSelect={setSelectedTestName}
-                          options={testOptions}
-                          placeholder="Search test"
-                          value={selectedTestName}
+                          label={draftKind === 'specialty' ? 'Specialty' : 'Test'}
+                          onChange={setDraftLabel}
+                          onSelect={setDraftLabel}
+                          options={selectedDraftOptions}
+                          placeholder={draftKind === 'specialty' ? 'Search specialty' : 'Search test'}
+                          value={draftLabel}
                         />
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {queuedTests.map((testName) => (
+                        {queueDrafts.map((draft) => (
                           <span
-                            key={testName}
+                            key={draft.id}
                             className="inline-flex items-center gap-2 rounded-full border border-[var(--border-soft)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)]"
                           >
-                            {testName}
+                            <TriageBadge triageState={draft.triageState} />
+                            <span>{draft.kind === 'specialty' ? draft.label : `Test: ${draft.label}`}</span>
                             <button
                               className="text-[var(--text-muted)]"
-                              onClick={() => setQueuedTests((current) => current.filter((candidate) => candidate !== testName))}
+                              onClick={() =>
+                                setQueueDrafts((current) => current.filter((candidate) => candidate.id !== draft.id))
+                              }
                               type="button"
                             >
                               ×
@@ -845,65 +802,74 @@ export function WorkspacePage() {
                           </span>
                         ))}
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          className="rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
-                          disabled={
-                            selectedTestName.trim().length === 0 ||
-                            queuedTests.includes(selectedTestName.trim())
+                      <button
+                        className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
+                        disabled={busyKey !== null || !canAddDraft}
+                        onClick={() => {
+                          if (!selectedPatient || !canAddDraft) {
+                            return
                           }
-                          onClick={() => {
-                            if (selectedTestName.trim().length === 0) {
-                              return
-                            }
 
-                            setQueuedTests((current) => [...current, selectedTestName.trim()])
-                            setSelectedTestName('')
-                          }}
-                          type="button"
-                        >
-                          Add test
-                        </button>
-                      </div>
+                          setQueueDrafts((current) => [
+                            ...current,
+                            {
+                              id: crypto.randomUUID(),
+                              kind: draftKind,
+                              label: draftLabel.trim(),
+                              triageState: selectedPatient.triageState,
+                            },
+                          ])
+                          setDraftLabel('')
+                        }}
+                        type="button"
+                      >
+                        Add to queue
+                      </button>
                       <textarea
                         className="mt-3 min-h-20 w-full rounded-[1rem] border border-[var(--border-soft)] bg-white px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
                         onChange={(event) => setTestNote(event.target.value)}
-                        placeholder="Optional note"
+                        placeholder="Optional note for any test items"
                         value={testNote}
                       />
+                      {selectedTestItem ? (
+                        <p className="mt-3 text-xs text-[var(--text-muted)]">
+                          Current test item: {selectedTestItem.testName} • {selectedTestItem.testerSpecialty}
+                        </p>
+                      ) : null}
+                      {sourceDoctorTask ? (
+                        <p className="mt-2 text-xs text-[var(--text-muted)]">
+                          Test results will return to {sourceDoctorTask.specialty}.
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-xs text-[var(--text-muted)]">
+                          Tests can only be ordered while you have an assigned doctor queue item on this patient.
+                        </p>
+                      )}
                       <button
                         className="mt-3 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60"
-                        disabled={busyKey !== null || !selectedDoctorTask || queuedTests.length === 0}
+                        disabled={busyKey !== null || queueDrafts.length === 0}
                         onClick={() =>
                           void runMutation(
-                            'order-tests',
-                            () =>
-                              createTestRequest(
-                                patients,
-                                doctors,
-                                notifications,
-                                selectedPatient.id,
-                                selectedDoctorTask!.id,
-                                { note: testNote, tests: queuedTests },
-                                actor,
-                              ),
+                            'queue-composer',
+                            () => submitQueueDrafts(),
                             (result) =>
-                              'patient' in result ? `Tests ordered for ${result.patient.name}.` : 'Tests ordered.',
+                              'patient' in result ? `Queue updated for ${result.patient.name}.` : 'Queue updated.',
                           ).then(() => {
-                            setQueuedTests([])
-                            setSelectedTestName('')
+                            setQueueDrafts([])
+                            setDraftLabel('')
+                            setDraftKind('specialty')
                             setTestNote('')
                           })
                         }
                         type="button"
                       >
-                        Order grouped tests
+                        Submit queue items
                       </button>
                     </section>
                   </div>
 
                   <section className="space-y-3">
-                    <p className="text-sm font-semibold text-[var(--text-primary)]">Doctor tasks</p>
+                    <p className="text-sm font-semibold text-[var(--text-primary)]">Queue items</p>
                     <div className="space-y-2">
                       {patientDoctorTasks.map((task) => (
                         <article
@@ -911,7 +877,7 @@ export function WorkspacePage() {
                           className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
                         >
                           <div className="flex flex-wrap items-center gap-2">
-                            <TriageBadge triageCode={task.code} />
+                            <TriageBadge triageState={task.triageState} />
                             <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
                               {taskStatusLabel(task.status)}
                             </span>
@@ -941,7 +907,7 @@ export function WorkspacePage() {
                             className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-3"
                           >
                             <div className="flex flex-wrap items-center gap-2">
-                              <TriageBadge triageCode={request.code} />
+                              <TriageBadge triageState={request.triageState} />
                               <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
                                 {request.status === 'pending'
                                   ? 'Pending'
