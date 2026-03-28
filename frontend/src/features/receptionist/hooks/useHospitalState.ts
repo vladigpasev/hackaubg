@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { AuthUser } from '../../../auth/types'
 import {
@@ -7,6 +7,7 @@ import {
 } from '../services/mockPatientApi'
 import {
   doctorProfilesAtom,
+  hospitalStateOwnerAtom,
   isHospitalStateHydratedAtom,
   notificationsAtom,
   patientsAtom,
@@ -17,8 +18,18 @@ import {
 } from '../state/patientAtoms'
 import type { HospitalSnapshot } from '../types/patient'
 
+function buildHospitalSessionKey(activeUser: AuthUser) {
+  return [
+    activeUser.role,
+    activeUser.username,
+    activeUser.isTester ? 'tester' : 'staff',
+    [...activeUser.specialties].sort().join(','),
+  ].join('|')
+}
+
 export function useHospitalState(activeUser: AuthUser) {
   const doctors = useAtomValue(doctorProfilesAtom)
+  const hospitalStateOwner = useAtomValue(hospitalStateOwnerAtom)
   const notifications = useAtomValue(notificationsAtom)
   const patients = useAtomValue(patientsAtom)
   const isHydrated = useAtomValue(isHospitalStateHydratedAtom)
@@ -26,15 +37,22 @@ export function useHospitalState(activeUser: AuthUser) {
   const replaceHospitalState = useSetAtom(replaceHospitalStateAtom)
   const replaceNotifications = useSetAtom(replaceNotificationsAtom)
   const replacePatients = useSetAtom(replacePatientsAtom)
-  const [isLoading, setIsLoading] = useState(!isHydrated)
+  const sessionKey = useMemo(() => buildHospitalSessionKey(activeUser), [activeUser])
+  const hasLoadedSnapshot = isHydrated && hospitalStateOwner === sessionKey
+  const runtimeDoctorsRef = useRef(doctors)
+  const [isLoading, setIsLoading] = useState(!hasLoadedSnapshot)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reloadRequest, setReloadRequest] = useState(0)
+
+  useEffect(() => {
+    runtimeDoctorsRef.current = doctors
+  }, [doctors])
 
   useEffect(() => {
     let isActive = true
 
     async function hydrateHospitalState() {
-      if (isHydrated && reloadRequest === 0) {
+      if (hasLoadedSnapshot && reloadRequest === 0) {
         setIsLoading(false)
         return
       }
@@ -49,7 +67,11 @@ export function useHospitalState(activeUser: AuthUser) {
           return
         }
 
-        replaceHospitalState(snapshot)
+        replaceHospitalState({
+          sessionKey,
+          snapshot,
+        })
+        setLoadError(null)
       } catch (error) {
         if (!isActive) {
           return
@@ -72,18 +94,21 @@ export function useHospitalState(activeUser: AuthUser) {
     return () => {
       isActive = false
     }
-  }, [activeUser, isHydrated, reloadRequest, replaceHospitalState])
+  }, [activeUser, hasLoadedSnapshot, reloadRequest, replaceHospitalState, sessionKey])
 
   useEffect(() => {
-    if (!isHydrated) {
+    if (!hasLoadedSnapshot) {
       return
     }
 
     const unsubscribe = subscribeToHospitalStream(
       activeUser,
-      doctors,
+      () => runtimeDoctorsRef.current,
       (snapshot) => {
-        replaceHospitalState(snapshot)
+        replaceHospitalState({
+          sessionKey,
+          snapshot,
+        })
         setLoadError(null)
       },
       (error) => {
@@ -92,14 +117,18 @@ export function useHospitalState(activeUser: AuthUser) {
     )
 
     return unsubscribe
-  }, [activeUser, doctors, isHydrated, replaceHospitalState])
+  }, [activeUser, hasLoadedSnapshot, replaceHospitalState, sessionKey])
 
   function replaceSnapshot(snapshot: HospitalSnapshot) {
-    replaceHospitalState(snapshot)
+    replaceHospitalState({
+      sessionKey,
+      snapshot,
+    })
   }
 
   return {
     doctors,
+    hasLoadedSnapshot,
     isLoading,
     loadError,
     notifications,

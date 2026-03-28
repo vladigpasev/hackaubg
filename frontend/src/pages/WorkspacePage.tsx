@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { AuthPendingScreen } from '../auth/AuthPendingScreen'
 import { useAuth } from '../auth/useAuth'
 import { CodeSelector } from '../features/receptionist/components/CodeSelector'
 import { Modal } from '../features/receptionist/components/Modal'
@@ -229,6 +230,7 @@ export function WorkspacePage() {
   const activeUser = user!
   const {
     doctors,
+    hasLoadedSnapshot,
     isLoading,
     loadError,
     notifications,
@@ -394,6 +396,33 @@ export function WorkspacePage() {
             batch.items.some((item) => item.assignedDoctorId === actor.doctorId),
         ) ?? null
       : null
+
+  if (!hasLoadedSnapshot) {
+    if (loadError) {
+      return (
+        <main className="min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--text-primary)]">
+          <div className="mx-auto max-w-3xl rounded-[1.5rem] border border-[var(--red-border)] bg-white p-6 shadow-[0_24px_80px_rgba(21,54,74,0.08)]">
+            <h1 className="text-2xl font-semibold">Unable to load the staff workspace</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{loadError}</p>
+            <button
+              className="mt-4 min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+              onClick={reloadHospitalState}
+              type="button"
+            >
+              Retry
+            </button>
+          </div>
+        </main>
+      )
+    }
+
+    return (
+      <AuthPendingScreen
+        title="Loading staff workspace"
+        message="The app is loading the current hospital directory and queue before showing staff-specific state."
+      />
+    )
+  }
 
   if (!activeDoctor) {
     return (

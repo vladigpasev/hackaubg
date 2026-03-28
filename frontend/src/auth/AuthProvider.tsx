@@ -1,11 +1,14 @@
 import { useEffect, useState, type PropsWithChildren } from 'react'
+import { useSetAtom } from 'jotai'
 import { useNavigate } from 'react-router-dom'
+import { resetHospitalStateAtom } from '../features/receptionist/state/patientAtoms'
 import { AuthContext } from './authContext'
 import { fetchCurrentUser, loginWithCredentials, logoutFromServer } from './authClient'
 import type { AuthCredentials, AuthUser } from './types'
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const navigate = useNavigate()
+  const resetHospitalState = useSetAtom(resetHospitalStateAtom)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isHydrated, setIsHydrated] = useState(false)
 
@@ -17,10 +20,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
         const currentUser = await fetchCurrentUser()
 
         if (isActive) {
+          resetHospitalState()
           setUser(currentUser)
         }
       } catch {
         if (isActive) {
+          resetHospitalState()
           setUser(null)
         }
       } finally {
@@ -35,10 +40,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return () => {
       isActive = false
     }
-  }, [])
+  }, [resetHospitalState])
 
   async function login(credentials: AuthCredentials) {
     const nextUser = await loginWithCredentials(credentials)
+    resetHospitalState()
     setUser(nextUser)
     setIsHydrated(true)
     return nextUser
@@ -48,6 +54,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     try {
       await logoutFromServer()
     } finally {
+      resetHospitalState()
       setUser(null)
       setIsHydrated(true)
       navigate('/login', { replace: true })

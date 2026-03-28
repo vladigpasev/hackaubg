@@ -882,7 +882,7 @@ export async function prefetchPatientDetails(patientId: string) {
 
 export function subscribeToHospitalStream(
   activeUser: AuthUser,
-  runtimeDoctors: DoctorProfile[],
+  getRuntimeDoctors: () => DoctorProfile[],
   onSnapshot: (snapshot: HospitalSnapshot) => void,
   onError?: (error: Error) => void,
 ) {
@@ -902,7 +902,7 @@ export function subscribeToHospitalStream(
     try {
       const snapshot = await loadSnapshot({
         activeUser,
-        runtimeDoctors,
+        runtimeDoctors: getRuntimeDoctors(),
       })
 
       if (!isClosed) {

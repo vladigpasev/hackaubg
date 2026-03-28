@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { PublicPatientSummaryCard } from '../features/public-patient/components/PublicPatientSummaryCard'
 import { PublicPatientShell } from '../features/public-patient/components/PublicPatientShell'
@@ -40,55 +40,91 @@ export function PublicPatientDetailsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isCheckedOut, setIsCheckedOut] = useState(false)
+  const requestSequenceRef = useRef(0)
 
-  useEffect(() => {
-    let isActive = true
+  const refreshPatient = useCallback(
+    async ({
+      notFoundMessage,
+      preservePatient,
+      setLoading = false,
+    }: {
+      notFoundMessage: string
+      preservePatient: boolean
+      setLoading?: boolean
+    }) => {
+      const requestId = requestSequenceRef.current + 1
+      requestSequenceRef.current = requestId
 
-    async function loadPatient() {
-      if (!decodedPhoneNumber) {
-        setError('Enter the patient phone number.')
-        setIsLoading(false)
-        return
+      if (setLoading) {
+        setIsLoading(true)
       }
-
-      setIsLoading(true)
-      setError(null)
-      setIsCheckedOut(false)
 
       try {
         const nextPatient = await getPublicPatientByPhoneNumber(decodedPhoneNumber)
 
-        if (!isActive) {
-          return
+        if (requestId !== requestSequenceRef.current) {
+          return null
         }
 
         setPatient(nextPatient)
+        setError(null)
+        return nextPatient
       } catch (nextError) {
-        if (!isActive) {
-          return
+        if (requestId !== requestSequenceRef.current) {
+          return null
         }
 
-        setPatient(null)
+        const isNotFound = isPublicPatientNotFoundError(nextError)
+
+        if (!preservePatient) {
+          setPatient(null)
+        }
+
+        if (isNotFound && preservePatient) {
+          setIsCheckedOut(true)
+        }
+
         setError(
-          isPublicPatientNotFoundError(nextError)
-            ? 'No active patient record was found for this phone number.'
+          isNotFound
+            ? notFoundMessage
             : nextError instanceof Error
               ? nextError.message
               : 'Patient details are unavailable right now. Please try again.',
         )
+
+        return null
       } finally {
-        if (isActive) {
+        if (setLoading && requestId === requestSequenceRef.current) {
           setIsLoading(false)
         }
       }
+    },
+    [decodedPhoneNumber],
+  )
+
+  useEffect(() => {
+    if (!decodedPhoneNumber) {
+      requestSequenceRef.current += 1
+      setPatient(null)
+      setError('Enter the patient phone number.')
+      setIsCheckedOut(false)
+      setIsLoading(false)
+      return
     }
 
-    void loadPatient()
+    setError(null)
+    setIsCheckedOut(false)
+    setPatient(null)
+    void refreshPatient({
+      notFoundMessage: 'No active patient record was found for this phone number.',
+      preservePatient: false,
+      setLoading: true,
+    })
 
     return () => {
-      isActive = false
+      requestSequenceRef.current += 1
     }
-  }, [decodedPhoneNumber])
+  }, [decodedPhoneNumber, refreshPatient])
 
   useEffect(() => {
     if (!patient?.id || isCheckedOut) {
@@ -113,34 +149,17 @@ export function PublicPatientDetailsPage() {
       const eventType = payload?.type ?? 'patient:update'
 
       if (eventType === 'patient:check-out') {
+        requestSequenceRef.current += 1
         setIsCheckedOut(true)
         stream.close()
         isClosed = true
         return
       }
 
-      void getPublicPatientByPhoneNumber(decodedPhoneNumber)
-        .then((nextPatient) => {
-          if (!isClosed) {
-            setPatient(nextPatient)
-            setError(null)
-          }
-        })
-        .catch((nextError) => {
-          if (!isClosed) {
-            if (isPublicPatientNotFoundError(nextError)) {
-              setIsCheckedOut(true)
-            }
-
-            setError(
-              isPublicPatientNotFoundError(nextError)
-                ? 'This patient is no longer active in the live hospital queue.'
-                : nextError instanceof Error
-                  ? nextError.message
-                  : 'Patient details are unavailable right now. Please try again.',
-            )
-          }
-        })
+      void refreshPatient({
+        notFoundMessage: 'This patient is no longer active in the live hospital queue.',
+        preservePatient: true,
+      })
     }
 
     stream.onerror = () => {}
@@ -149,7 +168,7 @@ export function PublicPatientDetailsPage() {
       isClosed = true
       stream.close()
     }
-  }, [decodedPhoneNumber, isCheckedOut, patient?.id])
+  }, [decodedPhoneNumber, isCheckedOut, patient?.id, refreshPatient])
 
   if (isLoading) {
     return (

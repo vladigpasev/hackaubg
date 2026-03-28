@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { AuthPendingScreen } from '../auth/AuthPendingScreen'
 import { useAuth } from '../auth/useAuth'
 import { CodeSelector } from '../features/receptionist/components/CodeSelector'
 import { Modal } from '../features/receptionist/components/Modal'
@@ -607,6 +608,7 @@ export function PatientQueueRolePage({
   const activeUser = user!
   const {
     doctors,
+    hasLoadedSnapshot,
     isLoading,
     loadError,
     notifications,
@@ -693,6 +695,44 @@ export function PatientQueueRolePage({
     } finally {
       setBusyKey(null)
     }
+  }
+
+  if (!hasLoadedSnapshot) {
+    if (loadError) {
+      return (
+        <main className="min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--text-primary)]">
+          <div className="mx-auto max-w-3xl rounded-[1.5rem] border border-[var(--red-border)] bg-white p-6 shadow-[0_24px_80px_rgba(21,54,74,0.08)]">
+            <h1 className="text-2xl font-semibold">Unable to load the patient board</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{loadError}</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+                onClick={reloadHospitalState}
+                type="button"
+              >
+                Retry
+              </button>
+              <button
+                className="min-h-12 rounded-full border border-[var(--border-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+                onClick={() => {
+                  void logout()
+                }}
+                type="button"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        </main>
+      )
+    }
+
+    return (
+      <AuthPendingScreen
+        title="Loading patient board"
+        message="The app is loading the current hospital snapshot before showing patient counts and actions."
+      />
+    )
   }
 
   return (

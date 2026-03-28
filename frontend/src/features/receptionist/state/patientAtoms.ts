@@ -10,12 +10,25 @@ export const patientsAtom = atom<Patient[]>([])
 export const doctorProfilesAtom = atom<DoctorProfile[]>([])
 export const notificationsAtom = atom<WorkspaceNotification[]>([])
 export const isHospitalStateHydratedAtom = atom(false)
+export const hospitalStateOwnerAtom = atom<string | null>(null)
 
-export const replaceHospitalStateAtom = atom(null, (_get, set, snapshot: HospitalSnapshot) => {
-  set(doctorProfilesAtom, snapshot.doctors)
-  set(notificationsAtom, snapshot.notifications)
-  set(patientsAtom, snapshot.patients)
-  set(isHospitalStateHydratedAtom, true)
+export const replaceHospitalStateAtom = atom(
+  null,
+  (_get, set, payload: { sessionKey: string; snapshot: HospitalSnapshot }) => {
+    set(doctorProfilesAtom, payload.snapshot.doctors)
+    set(notificationsAtom, payload.snapshot.notifications)
+    set(patientsAtom, payload.snapshot.patients)
+    set(hospitalStateOwnerAtom, payload.sessionKey)
+    set(isHospitalStateHydratedAtom, true)
+  },
+)
+
+export const resetHospitalStateAtom = atom(null, (_get, set) => {
+  set(doctorProfilesAtom, [])
+  set(notificationsAtom, [])
+  set(patientsAtom, [])
+  set(hospitalStateOwnerAtom, null)
+  set(isHospitalStateHydratedAtom, false)
 })
 
 export const replacePatientsAtom = atom(null, (_get, set, patients: Patient[]) => {
