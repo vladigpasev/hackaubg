@@ -2,7 +2,8 @@ import { atom } from 'jotai'
 import type { PatientCheckoutEvent, Patient } from '../types/patient'
 
 export const patientsAtom = atom<Patient[]>([])
-export const isReceptionOnlineAtom = atom(true)
+export const isPatientQueueOnlineAtom = atom(true)
+export const isReceptionOnlineAtom = isPatientQueueOnlineAtom
 
 export const replacePatientsAtom = atom(null, (_get, set, patients: Patient[]) => {
   set(patientsAtom, patients)

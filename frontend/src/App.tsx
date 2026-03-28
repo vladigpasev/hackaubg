@@ -2,9 +2,9 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AuthHomeRedirect } from './auth/AuthHomeRedirect'
 import { ProtectedRoute } from './auth/ProtectedRoute'
 import { PublicOnlyRoute } from './auth/PublicOnlyRoute'
-import { PatientEventBridge } from './features/receptionist/realtime/PatientEventBridge'
 import { LoginPage } from './pages/LoginPage'
-import { ReceptionistPage } from './pages/ReceptionistPage'
+import { NursePage } from './pages/NursePage'
+import { RegistryPage } from './pages/RegistryPage'
 import { WorkspacePage } from './pages/WorkspacePage'
 
 function App() {
@@ -17,19 +17,11 @@ function App() {
       <Route path="/" element={<AuthHomeRedirect />} />
 
       <Route element={<ProtectedRoute allowedRoles={['registry']} />}>
-        <Route
-          path="/registry"
-          element={
-            <>
-              <PatientEventBridge />
-              <ReceptionistPage />
-            </>
-          }
-        />
+        <Route path="/registry" element={<RegistryPage />} />
       </Route>
 
       <Route element={<ProtectedRoute allowedRoles={['nurse']} />}>
-        <Route path="/nurse" element={<WorkspacePage />} />
+        <Route path="/nurse" element={<NursePage />} />
       </Route>
 
       <Route element={<ProtectedRoute allowedRoles={['doctor']} />}>

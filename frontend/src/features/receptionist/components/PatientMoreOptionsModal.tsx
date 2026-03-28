@@ -4,13 +4,20 @@ import { Modal } from './Modal'
 interface PatientMoreOptionsModalProps {
   open: boolean
   patient: Patient | null
+  contextLabel?: string
   onClose: () => void
 }
 
-export function PatientMoreOptionsModal({ onClose, open, patient }: PatientMoreOptionsModalProps) {
+export function PatientMoreOptionsModal({
+  contextLabel,
+  onClose,
+  open,
+  patient,
+}: PatientMoreOptionsModalProps) {
   return (
     <Modal
-      description="This placeholder keeps the fetch-and-open flow ready for fuller patient details later without changing the receptionist list architecture."
+      contextLabel={contextLabel}
+      description="This placeholder keeps the fetch-and-open flow ready for fuller patient details later without changing the patient queue architecture."
       footer={
         <button
           className="min-h-12 rounded-[1.05rem] border border-[var(--border-soft)] bg-white px-5 py-3 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"

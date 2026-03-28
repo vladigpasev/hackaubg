@@ -5,6 +5,7 @@ import { Modal } from './Modal'
 interface RegisterPatientModalProps {
   open: boolean
   isSubmitting: boolean
+  contextLabel?: string
   onClose: () => void
   onSubmit: (values: CheckInPatientInput) => Promise<void>
 }
@@ -60,6 +61,7 @@ function validate(values: CheckInPatientInput): RegisterPatientErrors {
 }
 
 export function RegisterPatientModal({
+  contextLabel,
   isSubmitting,
   onClose,
   onSubmit,
@@ -125,6 +127,7 @@ export function RegisterPatientModal({
 
   return (
     <Modal
+      contextLabel={contextLabel}
       description="Capture the essentials only. The live update stream will place the patient into the active list after check-in succeeds."
       footer={
         <>

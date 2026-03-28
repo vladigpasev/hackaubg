@@ -1,31 +1,40 @@
 import type { Patient } from '../types/patient'
 import { PatientCard } from './PatientCard'
 
+interface CheckoutControls {
+  isCheckingOutPatientId: string | null
+  onCheckout: (patient: Patient) => void
+}
+
 interface PatientListProps {
   patients: Patient[]
-  isCheckingOutPatientId: string | null
   isOpeningMoreOptionsPatientId: string | null
-  onCheckout: (patient: Patient) => void
   onOpenMoreOptions: (patient: Patient) => void
+  checkoutControls?: CheckoutControls
 }
 
 export function PatientList({
-  isCheckingOutPatientId,
   isOpeningMoreOptionsPatientId,
-  onCheckout,
   onOpenMoreOptions,
   patients,
+  checkoutControls,
 }: PatientListProps) {
   return (
     <div className="space-y-4">
       {patients.map((patient) => (
         <PatientCard
-          isCheckingOut={isCheckingOutPatientId === patient.id}
           isOpeningMoreOptions={isOpeningMoreOptionsPatientId === patient.id}
           key={patient.id}
-          onCheckout={onCheckout}
           onOpenMoreOptions={onOpenMoreOptions}
           patient={patient}
+          checkoutAction={
+            checkoutControls
+              ? {
+                  isCheckingOut: checkoutControls.isCheckingOutPatientId === patient.id,
+                  onCheckout: checkoutControls.onCheckout,
+                }
+              : undefined
+          }
         />
       ))}
     </div>

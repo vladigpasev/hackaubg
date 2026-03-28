@@ -3,17 +3,17 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { patientEventStream } from '../services/mockPatientEventStream'
 import {
   addPatientFromEventAtom,
-  isReceptionOnlineAtom,
+  isPatientQueueOnlineAtom,
   removePatientFromEventAtom,
 } from '../state/patientAtoms'
 
 export function PatientEventBridge() {
-  const isReceptionOnline = useAtomValue(isReceptionOnlineAtom)
+  const isPatientQueueOnline = useAtomValue(isPatientQueueOnlineAtom)
   const addPatientFromEvent = useSetAtom(addPatientFromEventAtom)
   const removePatientFromEvent = useSetAtom(removePatientFromEventAtom)
 
   useEffect(() => {
-    if (!isReceptionOnline) {
+    if (!isPatientQueueOnline) {
       return
     }
 
@@ -27,7 +27,7 @@ export function PatientEventBridge() {
       unsubscribePatientNew()
       unsubscribePatientCheckout()
     }
-  }, [addPatientFromEvent, isReceptionOnline, removePatientFromEvent])
+  }, [addPatientFromEvent, isPatientQueueOnline, removePatientFromEvent])
 
   return null
 }

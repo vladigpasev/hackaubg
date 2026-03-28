@@ -1,27 +1,32 @@
 import type { Patient } from '../types/patient'
 import { TriageBadge } from './TriageBadge'
 
-interface PatientCardProps {
-  patient: Patient
+interface CheckoutAction {
   isCheckingOut: boolean
-  isOpeningMoreOptions: boolean
   onCheckout: (patient: Patient) => void
-  onOpenMoreOptions: (patient: Patient) => void
 }
 
+interface PatientCardProps {
+  patient: Patient
+  isOpeningMoreOptions: boolean
+  onOpenMoreOptions: (patient: Patient) => void
+  checkoutAction?: CheckoutAction
+}
+
+const admittedAtFormatter = new Intl.DateTimeFormat('en-GB', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
 function formatAdmittedAt(value: string) {
-  return new Intl.DateTimeFormat('en-GB', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
+  return admittedAtFormatter.format(new Date(value))
 }
 
 export function PatientCard({
-  isCheckingOut,
   isOpeningMoreOptions,
-  onCheckout,
   onOpenMoreOptions,
   patient,
+  checkoutAction,
 }: PatientCardProps) {
   return (
     <article className="rounded-[1.5rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] px-4 py-4 sm:px-5">
@@ -46,7 +51,11 @@ export function PatientCard({
           </div>
         </div>
 
-        <div className="flex w-full flex-col gap-3 sm:w-auto sm:min-w-60 sm:flex-row">
+        <div
+          className={`flex w-full flex-col gap-3 sm:w-auto ${
+            checkoutAction ? 'sm:min-w-60 sm:flex-row' : 'sm:min-w-44'
+          }`}
+        >
           <button
             className="min-h-12 rounded-[1.05rem] border border-[var(--border-soft)] bg-white px-4 py-3 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
             disabled={isOpeningMoreOptions}
@@ -55,14 +64,16 @@ export function PatientCard({
           >
             {isOpeningMoreOptions ? 'Loading options...' : 'More Options'}
           </button>
-          <button
-            className="min-h-12 rounded-[1.05rem] border border-[var(--red-border)] bg-[var(--red-soft)] px-4 py-3 text-sm font-semibold text-[var(--red-text)] transition hover:bg-[#f8dddb] disabled:cursor-not-allowed disabled:opacity-70"
-            disabled={isCheckingOut}
-            onClick={() => onCheckout(patient)}
-            type="button"
-          >
-            {isCheckingOut ? 'Checking out...' : 'Checkout'}
-          </button>
+          {checkoutAction ? (
+            <button
+              className="min-h-12 rounded-[1.05rem] border border-[var(--red-border)] bg-[var(--red-soft)] px-4 py-3 text-sm font-semibold text-[var(--red-text)] transition hover:bg-[#f8dddb] disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={checkoutAction.isCheckingOut}
+              onClick={() => checkoutAction.onCheckout(patient)}
+              type="button"
+            >
+              {checkoutAction.isCheckingOut ? 'Checking out...' : 'Checkout'}
+            </button>
+          ) : null}
         </div>
       </div>
     </article>

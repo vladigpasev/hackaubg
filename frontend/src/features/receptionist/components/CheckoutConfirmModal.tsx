@@ -5,11 +5,13 @@ interface CheckoutConfirmModalProps {
   open: boolean
   patient: Patient | null
   isSubmitting: boolean
+  contextLabel?: string
   onClose: () => void
   onConfirm: () => void
 }
 
 export function CheckoutConfirmModal({
+  contextLabel,
   isSubmitting,
   onClose,
   onConfirm,
@@ -18,7 +20,8 @@ export function CheckoutConfirmModal({
 }: CheckoutConfirmModalProps) {
   return (
     <Modal
-      description="Checkout removes the patient from the receptionist queue through the live update flow."
+      contextLabel={contextLabel}
+      description="Checkout removes the patient from the active queue through the live update flow."
       footer={
         <>
           <button

@@ -5,11 +5,20 @@ interface ModalProps extends PropsWithChildren {
   open: boolean
   title: string
   description?: string
+  contextLabel?: string
   onClose: () => void
   footer?: ReactNode
 }
 
-export function Modal({ children, description, footer, onClose, open, title }: ModalProps) {
+export function Modal({
+  children,
+  contextLabel = 'Patient workspace',
+  description,
+  footer,
+  onClose,
+  open,
+  title,
+}: ModalProps) {
   useEffect(() => {
     if (!open) {
       return
@@ -58,7 +67,7 @@ export function Modal({ children, description, footer, onClose, open, title }: M
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
-              Reception desk
+              {contextLabel}
             </p>
             <h2 className="mt-2 text-2xl font-semibold break-words" id="modal-title">
               {title}
