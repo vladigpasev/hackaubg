@@ -9,11 +9,12 @@ Copy `.env.example` to `.env` and set:
 ```bash
 DATABASE_URL="file:./hospital.db"
 JWT_SECRET="replace-with-a-long-random-secret"
+REDIS_URL="redis://127.0.0.1:6379"
 FRONTEND_ORIGIN="http://localhost:5173"
 PORT=3000
 ```
 
-`JWT_SECRET` is required at startup.
+`JWT_SECRET` and `REDIS_URL` are required at startup.
 
 ## Install and Run
 
@@ -33,6 +34,16 @@ Swagger is available at [http://localhost:3000/api](http://localhost:3000/api).
 - `POST /auth/logout`
 
 The backend sets an `HttpOnly` cookie named `hospital_auth`. The cookie expires after 8 hours. In production it is marked `Secure`.
+
+## Protected Patient API
+
+- `POST /patient/check-in` (`registry`)
+- `GET /patient/all` (authenticated users)
+- `DELETE /patient/check-out/:patient_id` (`registry`)
+- `PATCH /patient/:patient_id` (`registry`, `nurse`)
+- `GET /patient/details/:patient_id` (authenticated users)
+- `POST /patient/note/:patient_id` (authenticated users)
+- `GET /stream` (authenticated users)
 
 ## Demo Users
 

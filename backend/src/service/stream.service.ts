@@ -10,4 +10,8 @@ export type StreamEvent = {
 export class StreamService {
   private readonly _stream = new Subject<StreamEvent>();
   readonly stream = this._stream.asObservable();
+
+  pushEvent(event: StreamEvent) {
+    this._stream.next(event);
+  }
 }

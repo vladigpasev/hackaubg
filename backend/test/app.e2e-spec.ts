@@ -12,6 +12,8 @@ import request, {
 import { App } from 'supertest/types';
 import { PrismaService } from './../src/service/prisma.service';
 
+jest.setTimeout(20000);
+
 describe('AuthController (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
@@ -23,6 +25,7 @@ describe('AuthController (e2e)', () => {
     process.env.DATABASE_URL = 'file:./auth.e2e.db';
     process.env.JWT_SECRET = 'test-secret';
     process.env.FRONTEND_ORIGIN = 'http://localhost:5173';
+    process.env.REDIS_URL = 'redis://127.0.0.1:6390';
     const { AppModule } = await import('./../src/app.module');
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -55,11 +58,43 @@ describe('AuthController (e2e)', () => {
         specialties: JSON.stringify(['icu', 'pulmonology']),
       },
     });
+
+    await prisma.user.create({
+      data: {
+        username: 'registry.admissions',
+        passwordHash: await hash('RegistryDemo!24', 12),
+        role: 'registry',
+        isTester: false,
+        specialties: JSON.stringify([]),
+      },
+    });
+
+    await prisma.user.create({
+      data: {
+        username: 'nurse.elena',
+        passwordHash: await hash('NurseWard!24', 12),
+        role: 'nurse',
+        isTester: false,
+        specialties: JSON.stringify([]),
+      },
+    });
   });
 
   afterAll(async () => {
-    await app.close();
-    rmSync(databasePath, { force: true });
+    if (prisma) {
+      await prisma.$disconnect();
+    }
+
+    if (app) {
+      await app.close();
+    }
+
+    try {
+      rmSync(databasePath, { force: true });
+      rmSync(`${databasePath}-journal`, { force: true });
+    } catch {
+      // SQLite can release the file handle slightly after Nest teardown on Windows.
+    }
   });
 
   it('POST /auth/login signs in a valid user', async () => {
@@ -126,5 +161,35 @@ describe('AuthController (e2e)', () => {
     const response = await httpClient.post('/auth/logout').expect(204);
 
     expect(response.headers['set-cookie'][0]).toContain('hospital_auth=;');
+  });
+
+  it('GET /patient/all rejects unauthenticated requests', async () => {
+    await httpClient.get('/patient/all').expect(401);
+  });
+
+  it('POST /patient/check-in rejects authenticated users without registry access', async () => {
+    const loginResponse = await httpClient
+      .post('/auth/login')
+      .send({
+        username: 'nurse.elena',
+        password: 'NurseWard!24',
+      })
+      .expect(200);
+
+    const cookie = loginResponse.headers['set-cookie'][0];
+
+    await httpClient
+      .post('/patient/check-in')
+      .set('Cookie', cookie)
+      .send({
+        name: 'Test Patient',
+        phone_number: '0888123456',
+        triage_state: 'GREEN',
+      })
+      .expect(403);
+  });
+
+  it('GET /stream rejects unauthenticated requests', async () => {
+    await httpClient.get('/stream').expect(401);
   });
 });

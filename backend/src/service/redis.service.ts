@@ -1,22 +1,32 @@
-import { createClient, type RedisClientType } from 'redis';
 import {
   Injectable,
   Logger,
   OnApplicationShutdown,
   OnModuleInit,
 } from '@nestjs/common';
+import { createClient, type RedisClientType } from 'redis';
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(RedisService.name);
-  readonly client: RedisClientType | null;
+  readonly client: RedisClientType;
 
   constructor() {
-    this.client = process.env.REDIS_URL
-      ? createClient({ url: process.env.REDIS_URL })
-      : null;
+    const redisUrl = process.env.REDIS_URL?.trim();
 
-    this.client?.on('error', (error: unknown) => {
+    if (!redisUrl) {
+      throw new Error('REDIS_URL environment variable is not set');
+    }
+
+    this.client = createClient({
+      url: redisUrl,
+      socket: {
+        connectTimeout: 1000,
+        reconnectStrategy: false,
+      },
+    });
+
+    this.client.on('error', (error: unknown) => {
       const message =
         error instanceof Error
           ? error.message
@@ -27,11 +37,6 @@ export class RedisService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async onModuleInit() {
-    if (!this.client) {
-      this.logger.log('REDIS_URL not set, skipping Redis connection');
-      return;
-    }
-
     try {
       await this.client.connect();
     } catch (error) {
@@ -44,7 +49,7 @@ export class RedisService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async onApplicationShutdown() {
-    if (this.client?.isOpen) {
+    if (this.client.isOpen) {
       await this.client.quit();
     }
   }
