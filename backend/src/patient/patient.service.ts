@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
@@ -63,7 +64,57 @@ export class PatientService {
     return record;
   }
 
-  checkOut(patientId: string) {}
+  async checkOut(patientId: string): Promise<{ checked_out: true }> {
+    const client = this.redisService.client;
+    const normalizedPatientId = patientId.trim();
+
+    const patientRecordKeys = await client.keys(
+      this.getPatientRecordPattern(normalizedPatientId),
+    );
+
+    if (patientRecordKeys.length === 0) {
+      throw new NotFoundException(
+        `Patient with id ${normalizedPatientId} is not checked in`,
+      );
+    }
+
+    try {
+      const patientRecords = await client.mGet(patientRecordKeys);
+      const phoneLookupKeys = patientRecords
+        .map((record) => {
+          if (!record) {
+            return null;
+          }
+
+          const parsedRecord = JSON.parse(record) as {
+            phone_number?: unknown;
+          } | null;
+
+          if (
+            !parsedRecord ||
+            typeof parsedRecord.phone_number !== 'string' ||
+            !parsedRecord.phone_number.trim()
+          ) {
+            return null;
+          }
+
+          return this.getPhoneLookupKey(parsedRecord.phone_number.trim());
+        })
+        .filter((key): key is string => Boolean(key));
+
+      if (phoneLookupKeys.length > 0) {
+        await client.del(phoneLookupKeys);
+      }
+
+      await client.del(patientRecordKeys);
+    } catch {
+      throw new ServiceUnavailableException(
+        'Unable to complete patient check-out',
+      );
+    }
+
+    return { checked_out: true };
+  }
 
   private getPhoneLookupKey(phoneNumber: string): string {
     return `patient:phone:${phoneNumber}`;
@@ -71,5 +122,9 @@ export class PatientService {
 
   private getPatientRecordKey(patientId: string): string {
     return `patient:record:${patientId}`;
+  }
+
+  private getPatientRecordPattern(patientId: string): string {
+    return `${this.getPatientRecordKey(patientId)}*`;
   }
 }
