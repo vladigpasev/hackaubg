@@ -1,4 +1,4 @@
-import { StreamEvent, StreamService } from '../service/stream.service.js';
+import { StreamEvent, StreamService } from '../service/stream.service';
 import { Controller, Sse } from '@nestjs/common';
 import { Observable } from 'rxjs';
 
