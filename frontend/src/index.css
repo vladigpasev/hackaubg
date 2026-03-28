@@ -49,8 +49,14 @@ body {
   color: var(--text-primary);
 }
 
+input,
 button {
+  font: inherit;
   cursor: pointer;
+}
+
+a {
+  color: inherit;
 }
 
 #root {
