@@ -501,82 +501,66 @@ export class PatientService {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
 
-    const patientRecordKeys = await client.keys(
-      this.getPatientRecordPattern(normalizedPatientId),
+    const patientScopedKeys = await client.keys(
+      `patient:*:${normalizedPatientId}`,
     );
 
-    if (patientRecordKeys.length === 0) {
+    if (patientScopedKeys.length === 0) {
       throw new NotFoundException(
         `Patient with id ${normalizedPatientId} is not checked in`,
       );
     }
 
     try {
-      const patientRecords = await client.mGet(patientRecordKeys);
-      const archivedRecords = patientRecordKeys.map((recordKey, index) => {
-        const rawRecord = patientRecords[index];
+      const keysToDelete = new Set(patientScopedKeys);
+      const recordedData: Record<string, unknown> = {};
+      const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+      let phoneLookupKey: string | null = null;
 
-        if (!rawRecord) {
-          return {
-            record_key: recordKey,
-            raw_record: null,
-            parsed_record: null,
-          };
+      for (const key of patientScopedKeys) {
+        const keyValue = await this.readRedisValueByKey(client, key);
+
+        this.assignRecordedDataFromKey(
+          recordedData,
+          key,
+          keyValue,
+          normalizedPatientId,
+        );
+
+        if (key === patientRecordKey) {
+          phoneLookupKey = this.getPhoneLookupKeyFromRecord(keyValue);
         }
+      }
 
-        try {
-          return {
-            record_key: recordKey,
-            raw_record: rawRecord,
-            parsed_record: JSON.parse(rawRecord) as unknown,
-          };
-        } catch {
-          return {
-            record_key: recordKey,
-            raw_record: rawRecord,
-            parsed_record: null,
-            parse_error: 'Invalid JSON payload in Redis record',
-          };
+      if (phoneLookupKey) {
+        const phoneLookupOwnerId = await client.get(phoneLookupKey);
+
+        if (phoneLookupOwnerId === normalizedPatientId) {
+          const phoneLookupValue = await this.readRedisValueByKey(
+            client,
+            phoneLookupKey,
+          );
+
+          this.assignRecordedDataFromKey(
+            recordedData,
+            phoneLookupKey,
+            phoneLookupValue,
+          );
+
+          keysToDelete.add(phoneLookupKey);
         }
-      });
-
-      const phoneLookupKeys = patientRecords
-        .map((record) => {
-          if (!record) {
-            return null;
-          }
-
-          const parsedRecord = JSON.parse(record) as {
-            phone_number?: unknown;
-          } | null;
-
-          if (
-            !parsedRecord ||
-            typeof parsedRecord.phone_number !== 'string' ||
-            !parsedRecord.phone_number.trim()
-          ) {
-            return null;
-          }
-
-          return this.getPhoneLookupKey(parsedRecord.phone_number.trim());
-        })
-        .filter((key): key is string => Boolean(key));
+      }
 
       await archiveWriter.writeJsonRecord(
         `${normalizedPatientId}-${Date.now()}`,
         {
           patient_id: normalizedPatientId,
-          checked_out_at: new Date().toISOString(),
-          patient_record_keys: patientRecordKeys,
-          records: archivedRecords,
+          archived_at: new Date().toISOString(),
+          recorded_data: recordedData,
         },
       );
 
-      if (phoneLookupKeys.length > 0) {
-        await client.del(phoneLookupKeys);
-      }
-
-      await client.del(patientRecordKeys);
+      await client.del([...keysToDelete]);
     } catch {
       throw new ServiceUnavailableException(
         'Unable to complete patient check-out',
@@ -585,10 +569,106 @@ export class PatientService {
 
     this.streamService.pushEvent({
       type: 'patient:check-out',
-      data: { id: patientId },
+      data: { id: normalizedPatientId },
     });
 
     return { checked_out: true };
+  }
+
+  private async readRedisValueByKey(
+    client: RedisService['client'],
+    key: string,
+  ): Promise<unknown> {
+    const keyType = await client.type(key);
+
+    if (keyType === 'string') {
+      const value = await client.get(key);
+      return value === null ? null : this.tryParseJson(value);
+    }
+
+    if (keyType === 'zset') {
+      const values = await client.zRangeWithScores(key, 0, -1);
+
+      return values.map(({ value, score }) => ({
+        value: this.tryParseJson(value),
+        score,
+      }));
+    }
+
+    if (keyType === 'hash') {
+      const values = await client.hGetAll(key);
+
+      return Object.entries(values).reduce<Record<string, unknown>>(
+        (acc, [field, value]) => {
+          acc[field] = this.tryParseJson(value);
+          return acc;
+        },
+        {},
+      );
+    }
+
+    if (keyType === 'list') {
+      const values = await client.lRange(key, 0, -1);
+      return values.map((value) => this.tryParseJson(value));
+    }
+
+    if (keyType === 'set') {
+      const values = await client.sMembers(key);
+      return values.map((value) => this.tryParseJson(value));
+    }
+
+    return null;
+  }
+
+  private assignRecordedDataFromKey(
+    target: Record<string, unknown>,
+    key: string,
+    value: unknown,
+    trailingSegmentToStrip?: string,
+  ): void {
+    const keySegments = key.split(':');
+
+    if (keySegments.length < 2 || keySegments[0] !== 'patient') {
+      return;
+    }
+
+    const pathSegments =
+      trailingSegmentToStrip &&
+      keySegments[keySegments.length - 1] === trailingSegmentToStrip
+        ? keySegments.slice(1, -1)
+        : keySegments.slice(1);
+
+    if (pathSegments.length === 0) {
+      return;
+    }
+
+    let cursor: Record<string, unknown> = target;
+
+    for (let index = 0; index < pathSegments.length; index += 1) {
+      const segment = pathSegments[index];
+      const isLeaf = index === pathSegments.length - 1;
+
+      if (isLeaf) {
+        cursor[segment] = value;
+        return;
+      }
+
+      const nextValue = cursor[segment];
+
+      if (!this.isObject(nextValue)) {
+        cursor[segment] = {};
+      }
+
+      cursor = cursor[segment] as Record<string, unknown>;
+    }
+  }
+
+  private tryParseJson(value: string): unknown {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
   }
 
   private getPhoneLookupKey(phoneNumber: string): string {
