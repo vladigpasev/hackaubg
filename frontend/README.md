@@ -1,73 +1,39 @@
-# React + TypeScript + Vite
+# Hospital Frontend Foundation
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This frontend is intentionally in a documentation-first setup phase. The app stack stays minimal while the product direction, UX rules, and contributor guidance are locked down for future implementation.
 
-Currently, two official plugins are available:
+## Current Scope
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Product direction: simple, clinically calm, English-only for the MVP, and hard to misuse.
+- Phase boundary: no runtime screens, routes, or business logic are being implemented yet.
 
-## React Compiler
+## Source Of Truth
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `AGENTS.md`
+- `docs/design-system.md`
+- `docs/ux-safety-rules.md`
+- `docs/content-localization.md`
 
-## Expanding the ESLint configuration
+## What This Phase Defines
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- The clinical light visual direction.
+- The button sizing and safe interaction constraints.
+- The MVP English copy expectations.
+- The rules future contributors and agents must follow when implementing UI.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## What This Phase Does Not Do
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- It does not implement routes or page shells.
+- It does not add a component library.
+- It does not add design tokens in code.
+- It does not change the current starter app beyond providing the documentation foundation.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## Working In This Repo
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Run the existing frontend commands from `frontend/`:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
+npm run build
+npm run lint
 ```
