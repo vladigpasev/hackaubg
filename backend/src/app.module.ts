@@ -9,6 +9,10 @@ import { PatientService } from './patient/patient.service';
 import { PrismaModule } from './service/prisma.module';
 import { RedisService } from './service/redis.service';
 import { StreamService } from './service/stream.service';
+import { MatcherService } from './service/matcher.service';
+import { DoctorController } from './controller/doctor.controller';
+import { SendController } from './controller/send.controller';
+import { WorkflowService } from './workflow/workflow.service';
 
 @Module({
   imports: [PrismaModule, AuthModule, ScheduleModule.forRoot()],
@@ -17,7 +21,15 @@ import { StreamService } from './service/stream.service';
     StreamController,
     PublicController,
     PatientController,
+    DoctorController,
+    SendController,
   ],
-  providers: [RedisService, StreamService, PatientService],
+  providers: [
+    RedisService,
+    StreamService,
+    PatientService,
+    MatcherService,
+    WorkflowService,
+  ],
 })
 export class AppModule {}

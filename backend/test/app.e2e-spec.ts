@@ -11,6 +11,8 @@ import request, {
 } from 'supertest';
 import { App } from 'supertest/types';
 import { PrismaService } from './../src/service/prisma.service';
+import { RedisService } from './../src/service/redis.service';
+import { createRedisServiceMock } from './../src/test-utils/fake-redis';
 
 jest.setTimeout(20000);
 
@@ -30,7 +32,10 @@ describe('AuthController (e2e)', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(RedisService)
+      .useValue(createRedisServiceMock())
+      .compile();
 
     app = moduleFixture.createNestApplication();
     app.use(cookieParser());

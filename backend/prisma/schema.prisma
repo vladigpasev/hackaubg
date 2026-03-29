@@ -16,3 +16,8 @@ model User {
 
   @@map("users")
 }
+
+model SpecialityWaterfall {
+  speciality  String  @id
+  waterfall   String  @default("[]")
+}
