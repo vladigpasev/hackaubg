@@ -35,4 +35,19 @@ export class AppController {
     this.appService.createRecord(record);
     return { success: true };
   }
+
+  @Get('/api/find-best-fit-hospital')
+  async findBestFitHospital(
+    @Query('lat') lat: string,
+    @Query('lng') lng: string,
+  ): Promise<InstanceRecord> {
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+
+    if (Number.isNaN(latNum) || Number.isNaN(lngNum)) {
+      throw new BadRequestException('Invalid latitude or longitude values.');
+    }
+
+    return this.appService.orderAdequateHospitals(latNum, lngNum)[0];
+  }
 }

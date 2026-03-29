@@ -16,6 +16,14 @@ export type InstanceRecord = {
 
 @Injectable()
 export class AppService {
+  orderAdequateHospitals(lat: number, lng: number) {
+    const records = this.getAllRecordsInArea(lat, lng, 20);
+    return records.sort((a, b) => {
+      const distanceA = this.calculateDistance(lat, lng, a.lat, a.lng);
+      const distanceB = this.calculateDistance(lat, lng, b.lat, b.lng);
+      return distanceA - distanceB;
+    });
+  }
   private readonly csvHeader = 'ip,lat,lng';
   private readonly csvFilePath = join(process.cwd(), 'data', 'instances.csv');
 
@@ -38,6 +46,39 @@ export class AppService {
     ].join(',');
 
     appendFileSync(this.csvFilePath, `${csvLine}\n`, 'utf8');
+  }
+
+  private getAllRecordsInArea(
+    lat: number,
+    lng: number,
+    radiusKm: number,
+  ): InstanceRecord[] {
+    const records = this.getAllRecords();
+
+    return records.filter((record) => {
+      const distance = this.calculateDistance(lat, lng, record.lat, record.lng);
+      return distance <= radiusKm;
+    });
+  }
+
+  private calculateDistance(
+    lat1: number,
+    lng1: number,
+    lat2: number,
+    lng2: number,
+  ): number {
+    const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+    const R = 6371; // Earth radius in kilometers
+
+    const dLat = toRadians(lat2 - lat1);
+    const dLng = toRadians(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRadians(lat1)) *
+        Math.cos(toRadians(lat2)) *
+        Math.sin(dLng / 2) ** 2;
+
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
   }
 
   getAllRecords(): InstanceRecord[] {
