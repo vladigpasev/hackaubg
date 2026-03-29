@@ -1,0 +1,65 @@
+@import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&display=swap");
+
+:root {
+  color-scheme: light;
+  font-family: "Atkinson Hyperlegible Next", "Segoe UI", sans-serif;
+  background-color: #f4f8fb;
+  --app-bg: #f4f8fb;
+  --surface-soft: #f8fbfc;
+  --surface-secondary: #edf4f7;
+  --border-soft: #d6e1e5;
+  --text-primary: #173042;
+  --text-secondary: #4f6675;
+  --text-muted: #748896;
+  --blue-border: #9ec1f1;
+  --blue-text: #285f99;
+  --teal: #0f8f8a;
+  --teal-strong: #0b736f;
+  --teal-soft: #e6f6f5;
+  --teal-border: #9fd8d4;
+  --red-border: #efb1ae;
+  --red-text: #b5413d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top left, rgba(15, 143, 138, 0.12), transparent 32%),
+    radial-gradient(circle at top right, rgba(75, 131, 184, 0.16), transparent 28%),
+    linear-gradient(180deg, #f7fbfd 0%, #f1f6f9 100%);
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+  background: transparent;
+  color: var(--text-primary);
+}
+
+body,
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(15, 143, 138, 0.18);
+}

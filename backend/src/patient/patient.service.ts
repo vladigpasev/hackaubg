@@ -16,6 +16,7 @@ import { AuthUser } from 'src/auth/auth.types';
 import * as tar from 'tar';
 import { isUserRole } from '../auth/auth.constants';
 import { AuthService } from '../auth/auth.service';
+import { PrismaService } from '../service/prisma.service';
 import { RedisService } from '../service/redis.service';
 import { StreamService } from '../service/stream.service';
 import { TRIAGE_STATES } from '../shared.types';
@@ -23,6 +24,15 @@ import {
   createJsonArchiver,
   getSofiaDateString,
 } from '../utils/archiver/jsonArchiver';
+import {
+  getDoctorOfflineKey,
+  getPatientQueueKey,
+  getPatientRecordKey,
+  hydratePatientRecord,
+  parseStoredPatientRecordString,
+  readPatientQueue,
+  serializePatientRecord,
+} from '../workflow/workflow.store';
 import {
   AllPatientsI,
   AttachPatientNotePayloadI,
@@ -33,14 +43,6 @@ import {
   UpdatePatientI,
 } from './patient.dto';
 import { FullPatientDataI, HistoryRecordI, QueueRecordI } from './patient.type';
-import {
-  getPatientQueueKey,
-  getPatientRecordKey,
-  hydratePatientRecord,
-  parseStoredPatientRecordString,
-  readPatientQueue,
-  serializePatientRecord,
-} from '../workflow/workflow.store';
 import {
   canCheckoutStoredAgenda,
   projectPatientDetailsFromAgenda,
@@ -53,6 +55,79 @@ const archiveWriter = createJsonArchiver({
 
 @Injectable()
 export class PatientService {
+  async currentLoad(): Promise<number> {
+    const client = this.redisService.client;
+
+    try {
+      const doctors = await this.prismaService.user.findMany({
+        where: { role: 'doctor' },
+        select: { username: true },
+      });
+
+      const offlineDoctorKeys = await client.keys(
+        `${getDoctorOfflineKey('')}*`,
+      );
+      const offlineDoctorIds = new Set(
+        offlineDoctorKeys.map((key) =>
+          key.slice(getDoctorOfflineKey('').length),
+        ),
+      );
+      const onlineDoctors = doctors.filter(
+        (doctor) => !offlineDoctorIds.has(doctor.username),
+      );
+
+      const queueKeys = await client.keys(`${getPatientQueueKey('')}*`);
+
+      if (queueKeys.length === 0) {
+        return 0;
+      }
+
+      const queueEntriesByKey = await Promise.all(
+        queueKeys.map((key) => client.zRange(key, 0, -1)),
+      );
+
+      const intensityNotEvaluatedForCurrentStaffing = queueEntriesByKey
+        .flat()
+        .reduce((sum, rawEntry) => {
+          let parsedEntry: unknown;
+
+          try {
+            parsedEntry = JSON.parse(rawEntry) as unknown;
+          } catch {
+            return sum;
+          }
+
+          if (
+            !this.isObject(parsedEntry) ||
+            typeof parsedEntry.triage_state !== 'string'
+          ) {
+            return sum;
+          }
+
+          if (parsedEntry.triage_state === 'GREEN') {
+            return sum + 1;
+          }
+
+          if (parsedEntry.triage_state === 'YELLOW') {
+            return sum + 1.5;
+          }
+
+          if (parsedEntry.triage_state === 'RED') {
+            return sum + 2;
+          }
+
+          return sum;
+        }, 0);
+
+      if (onlineDoctors.length === 0) {
+        return intensityNotEvaluatedForCurrentStaffing;
+      }
+
+      return intensityNotEvaluatedForCurrentStaffing / onlineDoctors.length;
+    } catch {
+      throw new ServiceUnavailableException('Unable to calculate current load');
+    }
+  }
   async getArchivedByDateTime(
     dateTimeValue: string,
   ): Promise<IArchivedDateResultsResponse> {
@@ -408,6 +483,7 @@ export class PatientService {
     private readonly redisService: RedisService,
     private readonly streamService: StreamService,
     private readonly authService: AuthService,
+    private readonly prismaService: PrismaService,
   ) {}
 
   async getPatientDetailsByPhoneNumber(
