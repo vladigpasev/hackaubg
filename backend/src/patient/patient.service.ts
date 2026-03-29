@@ -40,6 +40,54 @@ const archiveWriter = createJsonArchiver({
 
 @Injectable()
 export class PatientService {
+  async currentLoad(): Promise<number> {
+    const client = this.redisService.client;
+
+    try {
+      const queueKeys = await client.keys(`${this.getPatientQueueKey('')}*`);
+
+      if (queueKeys.length === 0) {
+        return 0;
+      }
+
+      const queueEntriesByKey = await Promise.all(
+        queueKeys.map((key) => client.zRange(key, 0, -1)),
+      );
+
+      return queueEntriesByKey.flat().reduce((sum, rawEntry) => {
+        let parsedEntry: unknown;
+
+        try {
+          parsedEntry = JSON.parse(rawEntry) as unknown;
+        } catch {
+          return sum;
+        }
+
+        if (
+          !this.isObject(parsedEntry) ||
+          typeof parsedEntry.triage_state !== 'string'
+        ) {
+          return sum;
+        }
+
+        if (parsedEntry.triage_state === 'GREEN') {
+          return sum + 1;
+        }
+
+        if (parsedEntry.triage_state === 'YELLOW') {
+          return sum + 1.5;
+        }
+
+        if (parsedEntry.triage_state === 'RED') {
+          return sum + 2;
+        }
+
+        return sum;
+      }, 0);
+    } catch {
+      throw new ServiceUnavailableException('Unable to calculate current load');
+    }
+  }
   async getArchivedByDateTime(
     dateTimeValue: string,
   ): Promise<IArchivedDateResultsResponse> {

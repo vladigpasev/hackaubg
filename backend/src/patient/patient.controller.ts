@@ -485,4 +485,9 @@ export class PatientController {
   ): Promise<void> {
     await this.patientService.attachNote(patientId, body);
   }
+
+  @Get('current-load')
+  async curentLoad() {
+    return this.patientService.currentLoad();
+  }
 }
