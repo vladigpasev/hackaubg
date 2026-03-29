@@ -10,6 +10,7 @@ import { StreamService } from './service/stream.service';
 import { MatcherService } from './service/matcher.service';
 import { DoctorController } from './controller/doctor.controller';
 import { SendController } from './controller/send.controller';
+import { WorkflowService } from './workflow/workflow.service';
 
 @Module({
   imports: [PrismaModule, AuthModule],
@@ -20,6 +21,12 @@ import { SendController } from './controller/send.controller';
     DoctorController,
     SendController,
   ],
-  providers: [RedisService, StreamService, PatientService, MatcherService],
+  providers: [
+    RedisService,
+    StreamService,
+    PatientService,
+    MatcherService,
+    WorkflowService,
+  ],
 })
 export class AppModule {}

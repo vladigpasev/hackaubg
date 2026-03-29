@@ -18,7 +18,14 @@ import {
   PatientDetailsResponseI,
   UpdatePatientI,
 } from './patient.dto';
-import { FullPatientDataI } from './patient.type';
+import {
+  getPatientQueueKey,
+  getPatientRecordKey,
+  hydratePatientRecord,
+  parseStoredPatientRecordString,
+  readPatientQueue,
+  serializePatientRecord,
+} from '../workflow/workflow.store';
 
 const archiveWriter = createJsonArchiver({
   rootDir: resolve(process.cwd(), 'archives'),
@@ -32,7 +39,7 @@ export class PatientService {
   ): Promise<CheckInResponseI> {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
-    const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+    const patientRecordKey = getPatientRecordKey(normalizedPatientId);
 
     const rawPatientRecord = await client.get(patientRecordKey);
 
@@ -190,7 +197,7 @@ export class PatientService {
   ): Promise<void> {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
-    const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+    const patientRecordKey = getPatientRecordKey(normalizedPatientId);
 
     try {
       const rawPatientRecord = await client.get(patientRecordKey);
@@ -245,17 +252,12 @@ export class PatientService {
   async getPatientDetails(patientId: string): Promise<PatientDetailsResponseI> {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
-
-    const patientRecordKey = this.getPatientRecordKey(normalizedPatientId);
+    const patientRecordKey = getPatientRecordKey(normalizedPatientId);
 
     try {
-      const [rawPatientRecord, rawQueueRecords] = await Promise.all([
+      const [rawPatientRecord, queue] = await Promise.all([
         client.get(patientRecordKey),
-        client.zRangeWithScores(
-          this.getPatientQueueKey(normalizedPatientId),
-          0,
-          -1,
-        ),
+        readPatientQueue(client, normalizedPatientId),
       ]);
 
       if (!rawPatientRecord) {
@@ -264,69 +266,13 @@ export class PatientService {
         );
       }
 
-      let parsedPatientRecord: unknown;
+      const parsedPatientRecord =
+        parseStoredPatientRecordString(rawPatientRecord);
 
-      try {
-        parsedPatientRecord = JSON.parse(rawPatientRecord) as unknown;
-      } catch {
-        parsedPatientRecord = null;
-      }
-
-      const parsedQueueRecords = rawQueueRecords
-        .map(({ value, score }) => {
-          try {
-            const parsedValue = JSON.parse(value) as {
-              triage_state?: unknown;
-              specialty?: unknown;
-              reffered_by_id?: unknown;
-              timestamp?: unknown;
-            } | null;
-
-            if (
-              !parsedValue ||
-              typeof parsedValue.triage_state !== 'string' ||
-              !TRIAGE_STATES.includes(
-                parsedValue.triage_state as (typeof TRIAGE_STATES)[number],
-              ) ||
-              typeof parsedValue.specialty !== 'string' ||
-              typeof parsedValue.reffered_by_id !== 'string'
-            ) {
-              return null;
-            }
-
-            const timestamp =
-              typeof parsedValue.timestamp === 'string'
-                ? new Date(parsedValue.timestamp)
-                : new Date(score);
-
-            if (Number.isNaN(timestamp.getTime())) {
-              return null;
-            }
-
-            return {
-              timestamp,
-              triage_state: parsedValue.triage_state,
-              specialty: parsedValue.specialty,
-              reffered_by_id: parsedValue.reffered_by_id,
-            };
-          } catch {
-            return null;
-          }
-        })
-        .filter((entry): entry is FullPatientDataI['queue'][number] =>
-          Boolean(entry),
+      if (!parsedPatientRecord) {
+        const phoneLookupKey = this.getPhoneLookupKeyFromRecord(
+          this.tryParseJson(rawPatientRecord),
         );
-
-      let transformedData: FullPatientDataI;
-      try {
-        transformedData = this.transformToFullPatientData(
-          normalizedPatientId,
-          parsedPatientRecord,
-          parsedQueueRecords,
-        );
-      } catch (error: unknown) {
-        const phoneLookupKey =
-          this.getPhoneLookupKeyFromRecord(parsedPatientRecord);
 
         if (phoneLookupKey) {
           await client.del(phoneLookupKey);
@@ -334,7 +280,7 @@ export class PatientService {
 
         await client.del([
           patientRecordKey,
-          this.getPatientQueueKey(normalizedPatientId),
+          getPatientQueueKey(normalizedPatientId),
         ]);
 
         throw new NotFoundException(
@@ -342,16 +288,7 @@ export class PatientService {
         );
       }
 
-      return {
-        id: transformedData.id,
-        name: transformedData.name,
-        phone_number: transformedData.phone_number,
-        triage_state: transformedData.triage_state,
-        admitted_at: new Date(transformedData.admitted_at),
-        notes: transformedData.notes,
-        history: transformedData.history,
-        queue: transformedData.queue,
-      };
+      return hydratePatientRecord(parsedPatientRecord, queue);
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw error;
@@ -461,7 +398,7 @@ export class PatientService {
       notes: [],
     };
 
-    const patientRecordKey = this.getPatientRecordKey(record.id);
+    const patientRecordKey = getPatientRecordKey(record.id);
 
     const reservationResult = await client.set(phoneLookupKey, record.id, {
       NX: true,
@@ -476,11 +413,13 @@ export class PatientService {
     try {
       await client.set(
         patientRecordKey,
-        JSON.stringify({
-          ...record,
-          history: [],
-          admitted_at: record.admitted_at.toISOString(),
-        }),
+        JSON.stringify(
+          serializePatientRecord({
+            ...record,
+            history: [],
+            queue: [],
+          }),
+        ),
       );
     } catch {
       await client.del(phoneLookupKey);
@@ -595,143 +534,8 @@ export class PatientService {
     return `patient:phone:${phoneNumber}`;
   }
 
-  private getPatientRecordKey(patientId: string): string {
-    return `patient:record:${patientId}`;
-  }
-
-  private getPatientQueueKey(patientId: string): string {
-    return `patient:queue:${patientId}`;
-  }
-
   private getPatientRecordPattern(patientId: string): string {
-    return `${this.getPatientRecordKey(patientId)}*`;
-  }
-
-  private transformToFullPatientData(
-    patientId: string,
-    rawRecord: unknown,
-    queue: FullPatientDataI['queue'],
-  ): FullPatientDataI {
-    if (!this.isObject(rawRecord)) {
-      throw new Error('Invalid patient record format');
-    }
-
-    const history = rawRecord.history;
-    if (Array.isArray(history)) {
-      history.map((entry) => {
-        if (!this.isObject(entry)) {
-          throw new Error('Invalid history record format');
-        }
-
-        const timestamp =
-          typeof entry.timestamp === 'string'
-            ? new Date(entry.timestamp)
-            : entry.timestamp;
-
-        if (
-          typeof entry.reffered_by_id !== 'string' ||
-          typeof entry.specialty !== 'string' ||
-          typeof entry.triage_state !== 'string' ||
-          !TRIAGE_STATES.includes(
-            entry.triage_state as (typeof TRIAGE_STATES)[number],
-          ) ||
-          typeof entry.reffered_to_id !== 'string' ||
-          typeof entry.is_done !== 'boolean' ||
-          !(timestamp instanceof Date) ||
-          Number.isNaN(timestamp.getTime())
-        ) {
-          throw new Error('Invalid history record format');
-        }
-
-        return entry;
-      });
-    }
-
-    if (Array.isArray(queue)) {
-      queue = [];
-    }
-
-    const transformed = {
-      ...rawRecord,
-      history,
-      queue,
-    } as FullPatientDataI;
-
-    if (!this.isFullPatientData(transformed)) {
-      console.log('throws the check');
-      throw new Error(
-        'Transformed data does not match FullPatientDataI format',
-      );
-    }
-
-    return transformed;
-  }
-
-  private isFullPatientData(value: unknown): value is FullPatientDataI {
-    console.log(value);
-
-    if (!this.isObject(value)) {
-      return false;
-    }
-
-    if (
-      typeof value.id !== 'string' ||
-      typeof value.name !== 'string' ||
-      typeof value.phone_number !== 'string' ||
-      typeof value.triage_state !== 'string' ||
-      !TRIAGE_STATES.includes(
-        value.triage_state as (typeof TRIAGE_STATES)[number],
-      ) ||
-      typeof value.admitted_at !== 'string' ||
-      !Array.isArray(value.notes) ||
-      !value.notes.every((note) => typeof note === 'string') ||
-      !Array.isArray(value.history) ||
-      !Array.isArray(value.queue)
-    ) {
-      return false;
-    }
-
-    const hasValidHistory = value.history.every((entry) => {
-      if (!this.isObject(entry)) {
-        return false;
-      }
-
-      return (
-        typeof entry.reffered_by_id === 'string' &&
-        typeof entry.specialty === 'string' &&
-        typeof entry.triage_state === 'string' &&
-        TRIAGE_STATES.includes(
-          entry.triage_state as (typeof TRIAGE_STATES)[number],
-        ) &&
-        typeof entry.reffered_to_id === 'string' &&
-        typeof entry.is_done === 'boolean' &&
-        entry.timestamp instanceof Date &&
-        !Number.isNaN(entry.timestamp.getTime())
-      );
-    });
-
-    if (!hasValidHistory && value.history.length > 0) {
-      return false;
-    }
-
-    if (!Array.isArray(value.queue) || value.queue.length === 0) return true;
-
-    return value.queue.every((entry) => {
-      if (!this.isObject(entry)) {
-        return false;
-      }
-
-      return (
-        entry.timestamp instanceof Date &&
-        !Number.isNaN(entry.timestamp.getTime()) &&
-        typeof entry.triage_state === 'string' &&
-        TRIAGE_STATES.includes(
-          entry.triage_state as (typeof TRIAGE_STATES)[number],
-        ) &&
-        typeof entry.specialty === 'string' &&
-        typeof entry.reffered_by_id === 'string'
-      );
-    });
+    return `${getPatientRecordKey(patientId)}*`;
   }
 
   private getPhoneLookupKeyFromRecord(record: unknown): string | null {
@@ -750,5 +554,13 @@ export class PatientService {
 
   private isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private tryParseJson(value: string): unknown {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
   }
 }

@@ -1,35 +1,53 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import type { User } from '../../generated/prisma/client';
+import type { PatientDetailsResponseI } from '../patient/patient.dto';
+import type { QueueRecordI } from '../patient/patient.type';
 import { PrismaService } from './prisma.service';
 import { RedisService } from './redis.service';
-import { PatientDetailsResponseI } from '../patient/patient.dto';
-import { QueueRecordI } from '../patient/patient.type';
-import { User } from '../../generated/prisma/client';
 import { StreamService } from './stream.service';
+import {
+  buildQueueSnapshotEvent,
+  getDoctorCurrentPatientKey,
+  getDoctorOfflineKey,
+  getPatientCurrentAssignmentKey,
+  getPatientQueueKey,
+  getPatientRecordKey,
+  getTriagePriority,
+  hydratePatientRecord,
+  parseDoctorSpecialties,
+  parseStoredPatientRecordString,
+  readPatientQueue,
+  serializeQueueRecord,
+} from '../workflow/workflow.store';
 
-export const TRIAGE_COLORS = {
-  YELLOW: 0,
-  GREEN: 1,
-  RED: 2,
-};
-
-export type Patient = {
+type WaitingPatientI = {
   id: string;
-  color: number;
-  assignments: {
-    specialty: string;
-    color: number;
-  }[];
+  priority: number;
+  assignments: QueueRecordI[];
 };
 
-export type Doctor = {
+type AvailableDoctorI = {
   id: string;
   specialties: string[];
 };
 
+type MatchResultI = {
+  doctor: string;
+  patient: string;
+  queuedAssignment: QueueRecordI;
+  currentAssignment: QueueRecordI;
+};
+
+type AssignmentCandidateI = {
+  queuedAssignment: QueueRecordI;
+  resolvedSpecialty: string;
+  priority: number;
+  specialtyOrder: number;
+};
+
 @Injectable()
-export class MatcherService implements OnModuleInit {
-  private readonly specialtyWaterfalls = new Map<string, string[]>();
-  public doctors: User[] = [];
+export class MatcherService {
+  private readonly logger = new Logger(MatcherService.name);
 
   constructor(
     private readonly prismaService: PrismaService,
@@ -37,186 +55,295 @@ export class MatcherService implements OnModuleInit {
     private readonly streamService: StreamService,
   ) {}
 
-  async onModuleInit() {
-    const waterfalls = await this.prismaService.specialityWaterfall.findMany();
-    for (const waterfall of waterfalls)
-      this.specialtyWaterfalls.set(
-        waterfall.speciality,
-        JSON.parse(waterfall.waterfall),
-      );
-
-    this.doctors = await this.prismaService.user.findMany({
-      where: { role: 'doctor' },
-    });
-  }
-
   async matchPatientsToDoctor(targetPatientId?: string): Promise<User | null> {
     const redis = this.redisService.client;
+    const [doctors, waterfalls, patientRecordKeys] = await Promise.all([
+      this.loadDoctors(),
+      this.loadSpecialtyWaterfalls(),
+      redis.keys(`${getPatientRecordKey('')}*`),
+    ]);
 
-    const patientIds = (await redis.keys('patient:record:*')).map((key) =>
-      key.slice(15),
+    if (doctors.length === 0 || patientRecordKeys.length === 0) {
+      return null;
+    }
+
+    const patientIds = patientRecordKeys.map((key) =>
+      key.slice(getPatientRecordKey('').length),
     );
-
-    const records: PatientDetailsResponseI[] = (
-      await redis.mGet(patientIds.map((id) => `patient:record:${id}`))
-    ).map((r) => JSON.parse(r!));
-
+    const rawRecords = await redis.mGet(
+      patientIds.map((patientId) => getPatientRecordKey(patientId)),
+    );
     const queues = await Promise.all(
-      patientIds.map(
-        (id) =>
-          redis
-            .lRange(`patient:queue:${id}`, 0, -1)
-            .then((q) => q.map((v) => JSON.parse(v))) as Promise<
-            QueueRecordI[]
-          >,
+      patientIds.map((patientId) => readPatientQueue(redis, patientId)),
+    );
+    const records = patientIds
+      .map((patientId, index) =>
+        this.hydratePatient(patientId, rawRecords[index], queues[index]),
+      )
+      .filter((patient): patient is PatientDetailsResponseI =>
+        Boolean(patient),
+      );
+
+    if (records.length === 0) {
+      return null;
+    }
+
+    const [takenDoctorIds, offlineDoctorIds] = await Promise.all([
+      redis.keys(`${getDoctorCurrentPatientKey('')}*`),
+      redis.keys(`${getDoctorOfflineKey('')}*`),
+    ]);
+    const normalizedTakenDoctorIds = takenDoctorIds.map((key) =>
+      key.slice(getDoctorCurrentPatientKey('').length),
+    );
+    const normalizedOfflineDoctorIds = new Set(
+      offlineDoctorIds.map((key) => key.slice(getDoctorOfflineKey('').length)),
+    );
+    const takenPatientIds = new Set(
+      (
+        await this.readDoctorAssignments(redis, normalizedTakenDoctorIds)
+      ).filter(
+        (patientId): patientId is string => typeof patientId === 'string',
       ),
     );
 
-    for (let i = 0; i < records.length; i++) records[i].queue = queues[i];
-
-    const takenDoctorIds = (await redis.keys('doctor:currentPatient:*')).map(
-      (k) => k.slice(22),
-    );
-
-    const takenPatientIds: string[] = (await redis.mGet(
-      takenDoctorIds.map((id) => `doctor:currentPatient:${id}`),
-    )) as any;
-
-    const offlineDoctorIds = (await redis.keys('doctor:offline:*')).map((k) =>
-      k.slice(14),
-    );
-
-    const freeDoctors = this.doctors
+    const freeDoctors = doctors
       .filter(
-        (doc) =>
-          !takenDoctorIds.includes(doc.username) &&
-          !offlineDoctorIds.includes(doc.username),
+        (doctor) =>
+          !normalizedTakenDoctorIds.includes(doctor.username) &&
+          !normalizedOfflineDoctorIds.has(doctor.username),
       )
-      .map((doc) => ({
-        id: doc.username,
-        specialties: JSON.parse(doc.specialties),
-      }));
+      .map((doctor) => ({
+        id: doctor.username,
+        specialties: parseDoctorSpecialties(doctor.specialties),
+      }))
+      .filter((doctor) => doctor.specialties.length > 0);
+
+    if (freeDoctors.length === 0) {
+      return null;
+    }
 
     const waitingPatients = records
-      .filter((patient) => !takenPatientIds.includes(patient.id))
+      .filter(
+        (patient) =>
+          !takenPatientIds.has(patient.id) && patient.queue.length > 0,
+      )
       .map((patient) => ({
         id: patient.id,
-        color: TRIAGE_COLORS[patient.triage_state],
-        assignments: patient.queue.map((a) => ({
-          specialty: a.specialty,
-          color: TRIAGE_COLORS[a.triage_state],
-        })),
+        priority: getTriagePriority(patient.triage_state),
+        assignments: patient.queue,
       }));
 
-    const matches = this.matchPatientsToDoctors_internal(
+    if (waitingPatients.length === 0) {
+      return null;
+    }
+
+    const matches = this.matchPatientsToDoctorsInternal(
       waitingPatients,
       freeDoctors,
+      waterfalls,
     );
+
+    if (matches.length === 0) {
+      return null;
+    }
 
     for (const match of matches) {
       await redis.set(
-        `patient:current:${match.patient}`,
-        JSON.stringify(match.assignment),
+        getPatientCurrentAssignmentKey(match.patient),
+        serializeQueueRecord(match.currentAssignment),
       );
-      await redis.del(`patient:queue:${match.patient}`);
-      await redis.zAdd(
-        `patient:queue:${match.patient}`,
-        records
-          .find((r) => r.id === match.patient)!
-          .queue.filter((a) => a.specialty !== match.assignment.specialty)
-          .map((v) => ({
-            value: JSON.stringify(v),
-            score: TRIAGE_COLORS[v.triage_state],
-          })),
+      await redis.zRem(
+        getPatientQueueKey(match.patient),
+        serializeQueueRecord(match.queuedAssignment),
       );
+
+      const queue = await readPatientQueue(redis, match.patient);
 
       this.streamService.pushEvent({
         type: 'patient:update',
-        data: {
-          id: match.patient,
-          queue: this.redisService.client.lRange(
-            `patient:queue:${match.patient}`,
-            0,
-            -1,
-          ),
-        },
+        data: buildQueueSnapshotEvent(match.patient, queue),
       });
     }
 
     await redis.mSet(
-      matches.map((m) => [`doctor:currentPatient:${m.doctor}`, m.patient]),
+      matches.map(
+        (match) =>
+          [getDoctorCurrentPatientKey(match.doctor), match.patient] as [
+            string,
+            string,
+          ],
+      ),
     );
 
     const targetDoctor = matches.find(
-      (m) => m.patient === targetPatientId,
+      (match) => match.patient === targetPatientId,
     )?.doctor;
 
     return targetDoctor
-      ? this.doctors.find((d) => d.username === targetDoctor)!
+      ? (doctors.find((doctor) => doctor.username === targetDoctor) ?? null)
       : null;
   }
 
-  private matchPatientsToDoctors_internal(
-    waitingPatients: Patient[],
-    freeDoctors: { id: string; specialties: string[] }[],
-  ): { doctor: string; patient: string; assignment: any }[] {
-    const matches: any[] = [];
+  async getDoctorByUsername(username: string): Promise<User | null> {
+    try {
+      return await this.prismaService.user.findUnique({
+        where: { username },
+      });
+    } catch (error) {
+      this.logPrismaWarning(
+        'Unable to load doctor by username during workflow resolution',
+        error,
+      );
+      return null;
+    }
+  }
 
-    const freeDoctorsBySpecialty = new Map<string, Doctor[]>();
+  private async loadDoctors(): Promise<User[]> {
+    try {
+      return await this.prismaService.user.findMany({
+        where: { role: 'doctor' },
+      });
+    } catch (error) {
+      this.logPrismaWarning(
+        'Unable to load doctors for patient matching',
+        error,
+      );
+      return [];
+    }
+  }
+
+  private async loadSpecialtyWaterfalls(): Promise<Map<string, string[]>> {
+    try {
+      const waterfalls =
+        await this.prismaService.specialityWaterfall.findMany();
+
+      return new Map(
+        waterfalls.map((waterfall) => [
+          waterfall.speciality,
+          parseDoctorSpecialties(waterfall.waterfall),
+        ]),
+      );
+    } catch (error) {
+      this.logPrismaWarning(
+        'Unable to load specialty waterfalls, continuing without fallback chains',
+        error,
+      );
+      return new Map();
+    }
+  }
+
+  private hydratePatient(
+    patientId: string,
+    rawRecord: string | null,
+    queue: QueueRecordI[],
+  ): PatientDetailsResponseI | null {
+    if (!rawRecord) {
+      return null;
+    }
+
+    const parsedRecord = parseStoredPatientRecordString(rawRecord);
+
+    if (!parsedRecord || parsedRecord.id !== patientId) {
+      return null;
+    }
+
+    return hydratePatientRecord(parsedRecord, queue);
+  }
+
+  private async readDoctorAssignments(
+    redis: typeof this.redisService.client,
+    doctorIds: string[],
+  ): Promise<Array<string | null>> {
+    if (doctorIds.length === 0) {
+      return [];
+    }
+
+    return redis.mGet(
+      doctorIds.map((doctorId) => getDoctorCurrentPatientKey(doctorId)),
+    );
+  }
+
+  private matchPatientsToDoctorsInternal(
+    waitingPatients: WaitingPatientI[],
+    freeDoctors: AvailableDoctorI[],
+    waterfalls: Map<string, string[]>,
+  ): MatchResultI[] {
+    const matches: MatchResultI[] = [];
+    const freeDoctorsBySpecialty = new Map<string, AvailableDoctorI[]>();
+
     for (const doctor of freeDoctors) {
       for (const specialty of doctor.specialties) {
-        if (!freeDoctorsBySpecialty.has(specialty))
-          freeDoctorsBySpecialty.set(specialty, []);
-        freeDoctorsBySpecialty.get(specialty)!.push(doctor);
+        const doctors = freeDoctorsBySpecialty.get(specialty) ?? [];
+        doctors.push(doctor);
+        freeDoctorsBySpecialty.set(specialty, doctors);
       }
     }
 
-    waitingPatients = [...waitingPatients].sort((a, b) => a.color - b.color);
+    const orderedPatients = [...waitingPatients].sort(
+      (left, right) => left.priority - right.priority,
+    );
 
-    perPatient: for (const patient of waitingPatients) {
-      const assignments: {
-        specialty: string;
-        color: number;
-        specialtyOrder: number;
-      }[] = patient.assignments
-        .flatMap(
-          (assignment) =>
-            this.specialtyWaterfalls
-              .get(assignment.specialty)
-              ?.map((specialty, i) => ({
-                specialty,
-                color: assignment.color,
-                specialtyOrder: i,
-              })) ?? {
-              specialty: assignment.specialty,
-              color: assignment.color,
-              specialtyOrder: 0,
-            },
+    patientLoop: for (const patient of orderedPatients) {
+      const candidates = patient.assignments
+        .flatMap((assignment) =>
+          this.expandAssignmentCandidates(assignment, waterfalls),
         )
-        .sort((a, b) =>
-          a.color === b.color
-            ? a.specialtyOrder - b.specialtyOrder
-            : a.color - b.color,
+        .sort((left, right) =>
+          left.priority === right.priority
+            ? left.specialtyOrder - right.specialtyOrder
+            : left.priority - right.priority,
         );
 
-      for (const assignment of assignments) {
-        if (!freeDoctorsBySpecialty.has(assignment.specialty)) continue;
+      for (const candidate of candidates) {
+        const doctors = freeDoctorsBySpecialty.get(candidate.resolvedSpecialty);
 
-        const doctors = freeDoctorsBySpecialty.get(assignment.specialty)!;
-        if (doctors.length === 0) continue;
+        if (!doctors || doctors.length === 0) {
+          continue;
+        }
 
-        const doctor = doctors.pop()!;
+        const doctor = doctors.pop();
+
+        if (!doctor) {
+          continue;
+        }
 
         matches.push({
-          doctor: doctor?.id,
+          doctor: doctor.id,
           patient: patient.id,
-          assignment,
+          queuedAssignment: candidate.queuedAssignment,
+          currentAssignment: {
+            ...candidate.queuedAssignment,
+            specialty: candidate.resolvedSpecialty,
+          },
         });
 
-        continue perPatient;
+        continue patientLoop;
       }
     }
 
     return matches;
+  }
+
+  private expandAssignmentCandidates(
+    assignment: QueueRecordI,
+    waterfalls: Map<string, string[]>,
+  ): AssignmentCandidateI[] {
+    const specialtyChain = waterfalls.get(assignment.specialty);
+    const specialties =
+      specialtyChain && specialtyChain.length > 0
+        ? specialtyChain
+        : [assignment.specialty];
+
+    return specialties.map((specialty, index) => ({
+      queuedAssignment: assignment,
+      resolvedSpecialty: specialty,
+      priority: getTriagePriority(assignment.triage_state),
+      specialtyOrder: index,
+    }));
+  }
+
+  private logPrismaWarning(message: string, error: unknown): void {
+    const details = error instanceof Error ? error.message : 'Unknown error';
+    this.logger.warn(`${message}: ${details}`);
   }
 }

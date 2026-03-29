@@ -47,7 +47,6 @@ export interface PatientDetailsResponseI extends CheckInResponseI {
   history: HistoryRecordI[];
 }
 
-export interface PatientI extends CheckInResponseI {}
+export type PatientI = CheckInResponseI;
 
 export type AllPatientsI = PatientI[];
-
