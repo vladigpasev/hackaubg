@@ -7,10 +7,19 @@ import { PatientService } from './patient/patient.service';
 import { PrismaModule } from './service/prisma.module';
 import { RedisService } from './service/redis.service';
 import { StreamService } from './service/stream.service';
+import { MatcherService } from './service/matcher.service';
+import { DoctorController } from './controller/doctor.controller';
+import { SendController } from './controller/send.controller';
 
 @Module({
   imports: [PrismaModule, AuthModule],
-  controllers: [HealthController, StreamController, PatientController],
-  providers: [RedisService, StreamService, PatientService],
+  controllers: [
+    HealthController,
+    StreamController,
+    PatientController,
+    DoctorController,
+    SendController,
+  ],
+  providers: [RedisService, StreamService, PatientService, MatcherService],
 })
 export class AppModule {}
