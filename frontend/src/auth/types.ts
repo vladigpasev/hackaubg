@@ -14,6 +14,7 @@ export interface AuthUser {
 
 export interface AuthResponse {
   user: AuthUser
+  token?: string
 }
 
 export interface AuthContextValue {

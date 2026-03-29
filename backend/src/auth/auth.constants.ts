@@ -51,20 +51,24 @@ export function isUserRole(value: string): value is UserRole {
 }
 
 export function buildAuthCookieOptions(): CookieOptions {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   return {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction,
     maxAge: AUTH_TOKEN_TTL_MS,
     path: '/',
   };
 }
 
 export function buildAuthClearCookieOptions(): CookieOptions {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   return {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction,
     path: '/',
   };
 }

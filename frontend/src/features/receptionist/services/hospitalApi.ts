@@ -7,6 +7,7 @@ import type {
   HospitalMutationResult,
   HospitalSnapshot,
 } from '../types/patient'
+import { getStoredAuthToken } from '../../../auth/tokenStorage'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:3000').replace(/\/+$/, '')
 
@@ -138,11 +139,13 @@ function mapPatientDetails(payload: unknown): BackendPatientDetails {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const authToken = getStoredAuthToken()
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...init?.headers,
     },
   })
@@ -172,7 +175,13 @@ export interface WorkspaceBootstrapResponse {
 }
 
 export function getHospitalStreamUrl() {
-  return `${API_BASE_URL}/stream`
+  const authToken = getStoredAuthToken()
+
+  if (!authToken) {
+    return `${API_BASE_URL}/stream`
+  }
+
+  return `${API_BASE_URL}/stream?token=${encodeURIComponent(authToken)}`
 }
 
 export async function listPatients() {

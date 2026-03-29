@@ -1,4 +1,5 @@
 import type { AuthUser } from '../../../auth/types'
+import { getStoredAuthToken } from '../../../auth/tokenStorage'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:3000').replace(/\/+$/, '')
 
@@ -83,11 +84,13 @@ function getErrorMessage(payload: unknown, fallbackMessage: string) {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const authToken = getStoredAuthToken()
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...init?.headers,
     },
   })

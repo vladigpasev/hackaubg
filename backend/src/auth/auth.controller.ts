@@ -44,7 +44,7 @@ export class AuthController {
 
     response.cookie(AUTH_COOKIE_NAME, result.token, buildAuthCookieOptions());
 
-    return { user: result.user };
+    return { user: result.user, token: result.token };
   }
 
   @Get('me')

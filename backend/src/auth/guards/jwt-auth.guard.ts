@@ -21,8 +21,7 @@ export class JwtAuthGuard implements CanActivate {
     const request = context
       .switchToHttp()
       .getRequest<Request & { user?: unknown }>();
-    const rawToken: unknown = request.cookies?.[AUTH_COOKIE_NAME];
-    const token = typeof rawToken === 'string' ? rawToken : null;
+    const token = this.extractToken(request);
 
     if (!token) {
       throw new UnauthorizedException('Authentication is required.');
@@ -40,5 +39,31 @@ export class JwtAuthGuard implements CanActivate {
 
     request.user = await this.authService.getAuthenticatedUser(payload.sub);
     return true;
+  }
+
+  private extractToken(request: Request): string | null {
+    const cookieToken = request.cookies?.[AUTH_COOKIE_NAME];
+
+    if (typeof cookieToken === 'string' && cookieToken.trim().length > 0) {
+      return cookieToken;
+    }
+
+    const authorizationHeader = request.headers.authorization;
+
+    if (typeof authorizationHeader === 'string') {
+      const [scheme, rawToken] = authorizationHeader.split(' ');
+
+      if (scheme === 'Bearer' && rawToken?.trim()) {
+        return rawToken.trim();
+      }
+    }
+
+    const queryToken = request.query.token;
+
+    if (typeof queryToken === 'string' && queryToken.trim().length > 0) {
+      return queryToken.trim();
+    }
+
+    return null;
   }
 }
