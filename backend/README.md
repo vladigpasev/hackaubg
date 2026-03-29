@@ -4,7 +4,7 @@
 
 ## Deployment Note
 
-The intended production model is self-hosted deployment for hospitals. For demo purposes, this backend is also hosted at:
+The intended production model is for us to host the system on-site inside hospitals. For demo purposes, this backend is also hosted at:
 
 - API: [backend-production-785e.up.railway.app](https://backend-production-785e.up.railway.app)
 - Swagger: [backend-production-785e.up.railway.app/api](https://backend-production-785e.up.railway.app/api)

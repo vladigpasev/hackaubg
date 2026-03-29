@@ -4,7 +4,7 @@
 
 ## Deployment Note
 
-The intended production model is self-hosted deployment for hospitals. For demo purposes, the ambulance frontend is also hosted at [centralized-frontend-production.up.railway.app](https://centralized-frontend-production.up.railway.app).
+The intended production model is for us to host the system on-site inside hospitals. For demo purposes, the ambulance frontend is also hosted at [centralized-frontend-production.up.railway.app](https://centralized-frontend-production.up.railway.app).
 
 ## What This App Does
 

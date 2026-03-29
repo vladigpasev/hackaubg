@@ -2,7 +2,7 @@
 
 Emergency care works best when information moves faster than panic. This project is our HackAUBG prototype for calmer emergency coordination: an ambulance can discover a suitable participating hospital, hospital staff can manage live intake and internal flow, and patients can follow their active visit without calling the front desk for every update.
 
-The platform is built to be self-hosted by hospitals. For demo purposes, we have also deployed a hosted version of every major surface.
+The platform is designed to be hosted on-site by us in hospitals. For demo purposes, we have also deployed a hosted version of every major surface.
 
 ## Team
 
@@ -42,7 +42,7 @@ flowchart LR
 
 ### Self-hosting direction
 
-The intended production model is self-hosted deployment for hospitals. Each hospital runs its own hospital backend and hospital frontend, exposes its own API base URL, and registers itself with the central dispatch service.
+The intended production model is for us to host the system on-site inside hospitals. Each hospital installation runs the hospital backend and hospital frontend on-site, exposes its own API base URL, and registers itself with the central dispatch service.
 
 ### Demo deployment
 

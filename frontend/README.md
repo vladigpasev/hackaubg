@@ -4,7 +4,7 @@
 
 ## Deployment Note
 
-The intended production model is self-hosted deployment for hospitals. For demo purposes, the hospital frontend is also hosted at [frontend-production-438f.up.railway.app](https://frontend-production-438f.up.railway.app).
+The intended production model is for us to host the system on-site inside hospitals. For demo purposes, the hospital frontend is also hosted at [frontend-production-438f.up.railway.app](https://frontend-production-438f.up.railway.app).
 
 ## What This App Covers
 

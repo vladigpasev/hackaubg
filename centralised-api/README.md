@@ -4,7 +4,7 @@
 
 ## Deployment Note
 
-The intended production model is self-hosted deployment for hospitals. For demo purposes, the centralised API is also hosted at:
+The intended production model is for us to host the system on-site inside hospitals. For demo purposes, the centralised API is also hosted at:
 
 - API: [centralised-api-production.up.railway.app](https://centralised-api-production.up.railway.app)
 - Example lookup: [centralised-api-production.up.railway.app/api/find-best-fit-hospital?lat=42.02352916358495&lng=23.089823070487814](https://centralised-api-production.up.railway.app/api/find-best-fit-hospital?lat=42.02352916358495&lng=23.089823070487814)
