@@ -53,6 +53,8 @@ function itemStatusLabel(status: PatientLabBatch['items'][number]['status']) {
       return 'Not here'
     case 'taken':
       return 'Taken'
+    case 'results_ready':
+      return 'Results ready'
   }
 }
 
@@ -169,6 +171,11 @@ export function PatientAgendaTimeline({ doctors, patient }: PatientAgendaTimelin
                   <p className="mt-1 text-xs text-[var(--text-muted)]">
                     {item.testerSpecialty} · {getDoctorLabelById(doctors, item.assignedDoctorId)}
                   </p>
+                  {item.resultsReadyAt ? (
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">
+                      Results ready at {formatTime(item.resultsReadyAt)}
+                    </p>
+                  ) : null}
                 </div>
               ))}
             </div>

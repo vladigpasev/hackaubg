@@ -42,11 +42,11 @@ export class PublicController {
   }
 
   private isPatientEvent(event: StreamEvent, patientId: string): boolean {
-    return (
-      typeof event.data === 'object' &&
-      event.data !== null &&
-      'id' in event.data &&
-      event.data.id === patientId
-    );
+    if (typeof event.data !== 'object' || event.data === null) {
+      return false;
+    }
+
+    const candidate = event.data as { id?: unknown };
+    return typeof candidate.id === 'string' && candidate.id === patientId;
   }
 }

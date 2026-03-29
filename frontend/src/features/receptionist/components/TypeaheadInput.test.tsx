@@ -24,8 +24,8 @@ function TypeaheadHarness({
   onChangeSpy,
   onSelectSpy,
 }: {
-  onChangeSpy: ReturnType<typeof vi.fn>
-  onSelectSpy: ReturnType<typeof vi.fn>
+  onChangeSpy: (value: string) => void
+  onSelectSpy: (value: string) => void
 }) {
   const [value, setValue] = useState('')
 

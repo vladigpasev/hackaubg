@@ -21,8 +21,17 @@ export function getDatabaseUrl() {
   return process.env.DATABASE_URL?.trim() || 'file:./hospital.db';
 }
 
-export function getFrontendOrigin() {
-  return process.env.FRONTEND_ORIGIN?.trim() || 'http://localhost:5173';
+export function getFrontendOrigins() {
+  const rawValue = process.env.FRONTEND_ORIGIN?.trim();
+
+  if (!rawValue) {
+    return ['http://localhost:5173', 'http://127.0.0.1:5173'];
+  }
+
+  return rawValue
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 }
 
 export function isUserRole(value: string): value is UserRole {

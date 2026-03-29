@@ -3,7 +3,7 @@ import { Subject } from 'rxjs';
 
 export type StreamEvent = {
   type: string;
-  data: any;
+  data: unknown;
 };
 
 @Injectable()

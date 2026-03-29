@@ -5,16 +5,27 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import {
   AUTH_COOKIE_NAME,
-  getFrontendOrigin,
+  getFrontendOrigins,
   getRequiredEnv,
 } from './auth/auth.constants';
 
 async function bootstrap() {
   getRequiredEnv('JWT_SECRET');
   const app = await NestFactory.create(AppModule);
+  const allowedOrigins = new Set(getFrontendOrigins());
   app.use(cookieParser());
   app.enableCors({
-    origin: getFrontendOrigin(),
+    origin: (
+      origin: string | undefined,
+      callback: (error: Error | null, allow?: boolean) => void,
+    ) => {
+      if (!origin || allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error('Origin is not allowed by CORS.'), false);
+    },
     credentials: true,
   });
 

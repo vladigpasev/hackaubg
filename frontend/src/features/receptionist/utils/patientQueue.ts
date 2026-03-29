@@ -125,7 +125,7 @@ export function getResultsReadyBatches(patient: Patient) {
 
 export function getPendingLabItems(patient: Patient) {
   return getCollectingLabBatches(patient).flatMap((batch) =>
-    batch.items.filter((item) => item.status !== 'taken'),
+    batch.items.filter((item) => item.status !== 'taken' && item.status !== 'results_ready'),
   )
 }
 
@@ -164,7 +164,7 @@ function getAgendaCandidates(patient: Patient): AgendaCandidate[] {
 
   const labCandidates = getCollectingLabBatches(patient).flatMap((batch) =>
     batch.items
-      .filter((item) => item.status !== 'taken')
+      .filter((item) => item.status !== 'taken' && item.status !== 'results_ready')
       .map<AgendaCandidate>((item) => ({
         code: item.code,
         createdAt: item.createdAt,
@@ -324,7 +324,10 @@ function getLabQueueLoad(patients: Patient[], doctorId: string) {
         (batchCount, batch) =>
           batchCount +
           batch.items.filter(
-            (item) => item.assignedDoctorId === doctorId && item.status !== 'taken',
+            (item) =>
+              item.assignedDoctorId === doctorId &&
+              item.status !== 'taken' &&
+              item.status !== 'results_ready',
           ).length,
         0,
       )
@@ -343,7 +346,11 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
     if (isTester) {
       for (const batch of getCollectingLabBatches(patient)) {
         for (const item of batch.items) {
-          if (item.assignedDoctorId !== doctorId || item.status === 'taken') {
+          if (
+            item.assignedDoctorId !== doctorId ||
+            item.status === 'taken' ||
+            item.status === 'results_ready'
+          ) {
             continue
           }
 
@@ -360,6 +367,29 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
             specialty: item.testerSpecialty,
             status: item.status,
             title: item.testName,
+          })
+        }
+      }
+
+      for (const batch of getWaitingResultsBatches(patient)) {
+        for (const item of batch.items) {
+          if (item.assignedDoctorId !== doctorId || item.status !== 'taken') {
+            continue
+          }
+
+          items.push({
+            batchId: batch.id,
+            code: item.code,
+            createdAt: item.updatedAt,
+            id: `${patient.id}:${batch.id}:${item.id}:results`,
+            itemId: item.id,
+            itemKind: 'lab_item',
+            patientAdmittedAt: patient.admittedAt,
+            patientId: patient.id,
+            patientName: patient.name,
+            specialty: item.testerSpecialty,
+            status: 'queued',
+            title: `${item.testName} results`,
           })
         }
       }

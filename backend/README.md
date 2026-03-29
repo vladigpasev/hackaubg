@@ -10,11 +10,11 @@ Copy `.env.example` to `.env` and set:
 DATABASE_URL="file:./hospital.db"
 JWT_SECRET="replace-with-a-long-random-secret"
 REDIS_URL="redis://127.0.0.1:6379"
-FRONTEND_ORIGIN="http://localhost:5173"
+FRONTEND_ORIGIN="http://localhost:5173,http://127.0.0.1:5173"
 PORT=3000
 ```
 
-`JWT_SECRET` and `REDIS_URL` are required at startup.
+`JWT_SECRET` and `REDIS_URL` are required at startup. `FRONTEND_ORIGIN` accepts a comma-separated allowlist so local Vite servers can run on `localhost` or `127.0.0.1`.
 
 ## Install and Run
 

@@ -22,7 +22,10 @@ function getTarStream(sourceFolderPath: string) {
   );
 }
 
-async function createTarBrotliArchive(sourceFolderPath: string, archivePath: string): Promise<void> {
+async function createTarBrotliArchive(
+  sourceFolderPath: string,
+  archivePath: string,
+): Promise<void> {
   await mkdir(dirname(archivePath), { recursive: true });
 
   const tarStream = getTarStream(sourceFolderPath);
@@ -36,20 +39,34 @@ async function createTarBrotliArchive(sourceFolderPath: string, archivePath: str
   await pipeline(tarStream, compressor, createWriteStream(archivePath));
 }
 
-async function createTarGzipArchive(sourceFolderPath: string, archivePath: string): Promise<void> {
+async function createTarGzipArchive(
+  sourceFolderPath: string,
+  archivePath: string,
+): Promise<void> {
   await mkdir(dirname(archivePath), { recursive: true });
   const tarStream = getTarStream(sourceFolderPath);
-  const compressor = zlib.createGzip({ level: zlib.constants.Z_BEST_COMPRESSION });
+  const compressor = zlib.createGzip({
+    level: zlib.constants.Z_BEST_COMPRESSION,
+  });
   await pipeline(tarStream, compressor, createWriteStream(archivePath));
 }
 
-async function createTarZstdArchive(sourceFolderPath: string, archivePath: string): Promise<void> {
-  const createZstdCompress = (zlib as typeof zlib & {
-    createZstdCompress?: (options?: Record<string, unknown>) => NodeJS.ReadWriteStream;
-  }).createZstdCompress;
+async function createTarZstdArchive(
+  sourceFolderPath: string,
+  archivePath: string,
+): Promise<void> {
+  const createZstdCompress = (
+    zlib as typeof zlib & {
+      createZstdCompress?: (
+        options?: Record<string, unknown>,
+      ) => NodeJS.ReadWriteStream;
+    }
+  ).createZstdCompress;
 
   if (typeof createZstdCompress !== 'function') {
-    throw new Error('The current Node.js runtime does not support zstd compression.');
+    throw new Error(
+      'The current Node.js runtime does not support zstd compression.',
+    );
   }
 
   await mkdir(dirname(archivePath), { recursive: true });
@@ -64,7 +81,11 @@ async function createTarZstdArchive(sourceFolderPath: string, archivePath: strin
   await pipeline(tarStream, compressor, createWriteStream(archivePath));
 }
 
-export function buildArchivePath(rootDir: string, folderDate: string, archiveFormat: ArchiveFormat): string {
+export function buildArchivePath(
+  rootDir: string,
+  folderDate: string,
+  archiveFormat: ArchiveFormat,
+): string {
   return resolve(rootDir, `${folderDate}.${archiveFormat}`);
 }
 
@@ -84,6 +105,6 @@ export async function createArchive(
       await createTarZstdArchive(sourceFolderPath, archivePath);
       return;
     default:
-      throw new Error(`Unsupported archive format: ${archiveFormat}`);
+      throw new Error('Unsupported archive format.');
   }
 }

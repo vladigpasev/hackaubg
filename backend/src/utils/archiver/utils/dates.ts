@@ -17,7 +17,10 @@ function getFormatter(timeZone: string): Intl.DateTimeFormat {
   return formatter;
 }
 
-export function getSofiaDateString(date: Date, timeZone = 'Europe/Sofia'): string {
+export function getSofiaDateString(
+  date: Date,
+  timeZone = 'Europe/Sofia',
+): string {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     throw new Error('Invalid date provided. Expected a valid Date instance.');
   }
@@ -30,7 +33,9 @@ export function getSofiaDateString(date: Date, timeZone = 'Europe/Sofia'): strin
   const day = parts.find((part) => part.type === 'day')?.value;
 
   if (!year || !month || !day) {
-    throw new Error(`Failed to derive a date string for time zone "${timeZone}".`);
+    throw new Error(
+      `Failed to derive a date string for time zone "${timeZone}".`,
+    );
   }
 
   return `${year}-${month}-${day}`;

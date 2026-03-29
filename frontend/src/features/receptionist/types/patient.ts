@@ -6,7 +6,7 @@ export type AssignmentCode = 'GREEN' | 'YELLOW'
 
 export type DoctorVisitStatus = 'queued' | 'with_staff' | 'not_here' | 'done'
 
-export type LabItemStatus = 'queued' | 'with_staff' | 'not_here' | 'taken'
+export type LabItemStatus = 'queued' | 'with_staff' | 'not_here' | 'taken' | 'results_ready'
 
 export type LabBatchStatus = 'collecting' | 'waiting_results' | 'results_ready' | 'return_created'
 
@@ -76,6 +76,7 @@ export interface PatientLabItem {
   createdAt: string
   updatedAt: string
   takenAt: string | null
+  resultsReadyAt: string | null
   takenByLabel: string | null
   queueOrder: number
 }

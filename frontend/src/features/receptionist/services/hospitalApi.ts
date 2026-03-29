@@ -3,6 +3,9 @@ import type {
   BackendPatientCore,
   BackendPatientDetails,
   BackendQueueRecord,
+  CatalogOption,
+  HospitalMutationResult,
+  HospitalSnapshot,
 } from '../types/patient'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:3000').replace(/\/+$/, '')
@@ -160,6 +163,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
+export interface WorkspaceBootstrapResponse {
+  snapshot: HospitalSnapshot
+  catalogs: {
+    specialties: CatalogOption[]
+    labTests: CatalogOption[]
+  }
+}
+
 export function getHospitalStreamUrl() {
   return `${API_BASE_URL}/stream`
 }
@@ -240,4 +251,86 @@ export async function deletePatient(patientId: string) {
   await request<{ checked_out: true }>(`/patient/check-out/${patientId}`, {
     method: 'DELETE',
   })
+}
+
+export async function fetchWorkspaceBootstrap() {
+  return request<WorkspaceBootstrapResponse>('/workspace/bootstrap', {
+    method: 'GET',
+  })
+}
+
+export async function markNotificationReadOnServer(notificationId: string) {
+  return request<HospitalSnapshot>(`/workspace/notifications/${notificationId}/read`, {
+    method: 'POST',
+  })
+}
+
+export async function addAssignmentsOnServer(
+  patientId: string,
+  input: {
+    assignments: Array<{
+      destinationKind: 'doctor' | 'lab'
+      id?: string
+      label: string
+      code: 'GREEN' | 'YELLOW'
+    }>
+    note: string
+    sourceVisitId?: string | null
+  },
+) {
+  return request<HospitalMutationResult>(`/workflow/patients/${patientId}/assignments`, {
+    method: 'POST',
+    body: JSON.stringify({
+      assignments: input.assignments,
+      note: input.note,
+      sourceVisitId: input.sourceVisitId ?? null,
+    }),
+  })
+}
+
+export async function addPatientNoteOnServer(patientId: string, note: string) {
+  return request<HospitalMutationResult>(`/workflow/patients/${patientId}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({
+      note: note.trim(),
+    }),
+  })
+}
+
+async function postWorkflowAction(path: string) {
+  return request<HospitalMutationResult>(path, {
+    method: 'POST',
+  })
+}
+
+export async function startDoctorVisitOnServer(visitId: string) {
+  return postWorkflowAction(`/workflow/doctor-visits/${visitId}/start`)
+}
+
+export async function markDoctorVisitNotHereOnServer(visitId: string) {
+  return postWorkflowAction(`/workflow/doctor-visits/${visitId}/not-here`)
+}
+
+export async function completeDoctorVisitOnServer(visitId: string) {
+  return postWorkflowAction(`/workflow/doctor-visits/${visitId}/complete`)
+}
+
+export async function startLabItemOnServer(itemId: string) {
+  return postWorkflowAction(`/workflow/lab-items/${itemId}/start`)
+}
+
+export async function markLabItemNotHereOnServer(itemId: string) {
+  return postWorkflowAction(`/workflow/lab-items/${itemId}/not-here`)
+}
+
+export async function markLabItemTakenOnServer(itemId: string) {
+  return postWorkflowAction(`/workflow/lab-items/${itemId}/taken`)
+}
+
+export async function markLabItemResultsReadyOnServer(itemId: string) {
+  return postWorkflowAction(`/workflow/lab-items/${itemId}/results-ready`)
+}
+
+export async function markLabResultsReadyOnServer(batchId: string) {
+  return postWorkflowAction(`/workflow/lab-batches/${batchId}/results-ready`)
 }

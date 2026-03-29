@@ -41,6 +41,11 @@ import {
   readPatientQueue,
   serializePatientRecord,
 } from '../workflow/workflow.store';
+import {
+  canCheckoutStoredAgenda,
+  projectPatientDetailsFromAgenda,
+} from '../workspace/workspace.projection';
+import { readStoredPatientAgenda } from '../workspace/workspace.store';
 
 const archiveWriter = createJsonArchiver({
   rootDir: resolve(process.cwd(), 'archives'),
@@ -315,9 +320,10 @@ export class PatientService {
     const patientRecordKey = getPatientRecordKey(normalizedPatientId);
 
     try {
-      const [rawPatientRecord, queue] = await Promise.all([
+      const [rawPatientRecord, queue, storedAgenda] = await Promise.all([
         client.get(patientRecordKey),
         readPatientQueue(client, normalizedPatientId),
+        readStoredPatientAgenda(client, normalizedPatientId),
       ]);
 
       if (!rawPatientRecord) {
@@ -346,6 +352,44 @@ export class PatientService {
         throw new NotFoundException(
           `Patient with id ${normalizedPatientId} has invalid data and was removed`,
         );
+      }
+
+      if (storedAgenda.length > 0) {
+        const coreRecord = {
+          id: parsedPatientRecord.id,
+          name: parsedPatientRecord.name,
+          phoneNumber: parsedPatientRecord.phone_number,
+          triageState: parsedPatientRecord.triage_state,
+          admittedAt: parsedPatientRecord.admitted_at,
+          notes: [...parsedPatientRecord.notes],
+        };
+        const projectedRecord = projectPatientDetailsFromAgenda(
+          coreRecord,
+          storedAgenda,
+        );
+
+        return {
+          id: projectedRecord.id,
+          name: projectedRecord.name,
+          phone_number: projectedRecord.phoneNumber,
+          triage_state: projectedRecord.triageState,
+          admitted_at: new Date(projectedRecord.admittedAt),
+          notes: [...projectedRecord.notes],
+          queue: projectedRecord.queue.map((entry) => ({
+            timestamp: new Date(entry.timestamp),
+            triage_state: entry.triageState,
+            specialty: entry.specialty,
+            reffered_by_id: entry.referredById,
+          })),
+          history: projectedRecord.history.map((entry) => ({
+            reffered_by_id: entry.referredById,
+            specialty: entry.specialty,
+            triage_state: entry.triageState,
+            reffered_to_id: entry.referredToId,
+            is_done: entry.isDone,
+            timestamp: new Date(entry.timestamp),
+          })),
+        };
       }
 
       return hydratePatientRecord(parsedPatientRecord, queue);
@@ -532,13 +576,20 @@ export class PatientService {
     const client = this.redisService.client;
     const normalizedPatientId = patientId.trim();
 
-    const patientScopedKeys = await client.keys(
-      `patient:*:${normalizedPatientId}`,
-    );
+    const [patientScopedKeys, storedAgenda] = await Promise.all([
+      client.keys(`patient:*:${normalizedPatientId}`),
+      readStoredPatientAgenda(client, normalizedPatientId),
+    ]);
 
     if (patientScopedKeys.length === 0) {
       throw new NotFoundException(
         `Patient with id ${normalizedPatientId} is not checked in`,
+      );
+    }
+
+    if (storedAgenda.length > 0 && !canCheckoutStoredAgenda(storedAgenda)) {
+      throw new ConflictException(
+        'Patient still has active doctor or lab work',
       );
     }
 

@@ -16,8 +16,8 @@ import {
   getVisibleNotifications,
   markDoctorVisitNotHere,
   markLabItemNotHere,
+  markLabItemResultsReady,
   markLabItemTaken,
-  markLabResultsReady,
   markNotificationRead,
   prefetchPatientDetails,
   startDoctorVisit,
@@ -388,14 +388,21 @@ export function WorkspacePage() {
         ) ?? null
       : null)
 
-  const waitingResultsBatch =
-    activeUser.isTester && selectedPatient
-      ? getLabBatches(selectedPatient).find(
-          (batch) =>
-            batch.status === 'waiting_results' &&
-            batch.items.some((item) => item.assignedDoctorId === actor.doctorId),
-        ) ?? null
+  const selectedWaitingResultsBatch =
+    activeUser.isTester && selectedLabBatch?.status === 'waiting_results' ? selectedLabBatch : null
+  const selectedLabItemAwaitingResults =
+    activeUser.isTester &&
+    selectedLabItem &&
+    selectedLabItem.assignedDoctorId === actor.doctorId &&
+    selectedLabItem.status === 'taken'
+      ? selectedLabItem
       : null
+  const selectedReadyResultCount = selectedWaitingResultsBatch
+    ? selectedWaitingResultsBatch.items.filter((item) => item.status === 'results_ready').length
+    : 0
+  const selectedPendingResultCount = selectedWaitingResultsBatch
+    ? selectedWaitingResultsBatch.items.filter((item) => item.status === 'taken').length
+    : 0
 
   if (!hasLoadedSnapshot) {
     if (loadError) {
@@ -687,7 +694,11 @@ export function WorkspacePage() {
                         </>
                       ) : null}
 
-                      {activeUser.isTester && selectedLabItem && selectedLabBatch ? (
+                      {activeUser.isTester &&
+                      selectedLabItem &&
+                      selectedLabBatch &&
+                      selectedLabItem.status !== 'taken' &&
+                      selectedLabItem.status !== 'results_ready' ? (
                         <>
                           {selectedLabItem.status !== 'with_staff' ? (
                             <button
@@ -772,7 +783,7 @@ export function WorkspacePage() {
                         </>
                       ) : null}
 
-                      {activeUser.isTester && waitingResultsBatch ? (
+                      {activeUser.isTester && selectedLabItemAwaitingResults && selectedLabBatch ? (
                         <button
                           className="min-h-12 rounded-full border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
                           disabled={busyKey !== null}
@@ -780,18 +791,19 @@ export function WorkspacePage() {
                             void runMutation(
                               'results-ready',
                               () =>
-                                markLabResultsReady(
+                                markLabItemResultsReady(
                                   patients,
                                   doctors,
                                   notifications,
                                   selectedPatient.id,
-                                  waitingResultsBatch.id,
+                                  selectedLabBatch.id,
+                                  selectedLabItemAwaitingResults.id,
                                   actor,
                                 ),
                               (result) =>
                                 'patient' in result
-                                  ? `${result.patient.name} lab results released.`
-                                  : 'Results released.',
+                                  ? `${result.patient.name} test marked as results ready.`
+                                  : 'Result updated.',
                             )
                           }
                           type="button"
@@ -923,15 +935,21 @@ export function WorkspacePage() {
                       <section className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4">
                         <p className="text-sm font-semibold text-[var(--text-primary)]">Lab workflow</p>
                         <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                          Tester users can guide the patient through queued lab items, mark each test as taken, and release results when the whole batch is ready.
+                          Tester users can guide the patient through queued lab items, then mark each completed test as results ready. When the last result in a batch is ready, the ordering doctor is added back to the agenda automatically.
                         </p>
-                        {waitingResultsBatch ? (
+                        {selectedWaitingResultsBatch ? (
                           <div className="mt-4 rounded-[1rem] border border-[var(--teal-border)] bg-white p-4">
                             <p className="text-sm font-semibold text-[var(--text-primary)]">
-                              Batch ready for results release
+                              Results progress for this batch
                             </p>
                             <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                              Return target: {waitingResultsBatch.returnSpecialty}
+                              {selectedReadyResultCount} of {selectedWaitingResultsBatch.items.length} tests are ready.
+                            </p>
+                            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                              Pending results: {selectedPendingResultCount}
+                            </p>
+                            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                              Return target: {selectedWaitingResultsBatch.returnSpecialty}
                             </p>
                           </div>
                         ) : null}

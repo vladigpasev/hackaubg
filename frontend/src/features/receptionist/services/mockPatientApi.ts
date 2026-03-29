@@ -12,6 +12,7 @@ export {
   getVisibleNotifications,
   markDoctorVisitNotHere,
   markLabItemNotHere,
+  markLabItemResultsReady,
   markLabItemTaken,
   markLabResultsReady,
   markNotificationRead,

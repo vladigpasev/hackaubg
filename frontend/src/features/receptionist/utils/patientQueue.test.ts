@@ -5,6 +5,7 @@ import {
   canCheckoutPatient,
   getPatientBoardCode,
   getPatientNextDestinationLabel,
+  getStaffQueueItems,
 } from './patientQueue'
 
 function buildPatient(agenda: PatientAgendaEntry[]): Patient {
@@ -68,6 +69,7 @@ describe('patient agenda helpers', () => {
             createdAt: '2026-03-28T08:16:00.000Z',
             id: 'LAB-ITEM-1',
             queueOrder: 1,
+            resultsReadyAt: null,
             status: 'queued',
             takenAt: null,
             takenByLabel: null,
@@ -119,6 +121,7 @@ describe('patient agenda helpers', () => {
             ...(
               (patient.agenda[1] as Extract<PatientAgendaEntry, { entryType: 'lab_batch' }>).items[0]
             ),
+            resultsReadyAt: null,
             status: 'taken',
             takenAt: '2026-03-28T08:20:00.000Z',
             takenByLabel: 'Lab Tester',
@@ -148,7 +151,8 @@ describe('patient agenda helpers', () => {
             createdAt: '2026-03-28T08:16:00.000Z',
             id: 'LAB-ITEM-1',
             queueOrder: 0,
-            status: 'taken',
+            resultsReadyAt: '2026-03-28T08:30:00.000Z',
+            status: 'results_ready',
             takenAt: '2026-03-28T08:20:00.000Z',
             takenByLabel: 'Lab Tester',
             testName: 'Blood Test',
@@ -286,5 +290,67 @@ describe('patient agenda helpers', () => {
     ])
 
     expect(canCheckoutPatient(patientClosed)).toBe(true)
+  })
+
+  it('keeps taken tests in the tester queue until their results are marked ready', () => {
+    const patient = buildPatient([
+      {
+        createdAt: '2026-03-28T08:16:00.000Z',
+        entryType: 'lab_batch',
+        id: 'BATCH-1',
+        items: [
+          {
+            assignedDoctorId: 'LAB-1',
+            code: 'GREEN',
+            createdAt: '2026-03-28T08:16:00.000Z',
+            id: 'LAB-ITEM-1',
+            queueOrder: 0,
+            resultsReadyAt: null,
+            status: 'taken',
+            takenAt: '2026-03-28T08:20:00.000Z',
+            takenByLabel: 'Lab Tester',
+            testName: 'Blood Test',
+            testerSpecialty: 'Laboratory Medicine',
+            updatedAt: '2026-03-28T08:24:00.000Z',
+          },
+          {
+            assignedDoctorId: 'LAB-1',
+            code: 'GREEN',
+            createdAt: '2026-03-28T08:18:00.000Z',
+            id: 'LAB-ITEM-2',
+            queueOrder: 0,
+            resultsReadyAt: '2026-03-28T08:26:00.000Z',
+            status: 'results_ready',
+            takenAt: '2026-03-28T08:22:00.000Z',
+            takenByLabel: 'Lab Tester',
+            testName: 'Urine Test',
+            testerSpecialty: 'Laboratory Medicine',
+            updatedAt: '2026-03-28T08:26:00.000Z',
+          },
+        ],
+        note: '',
+        orderedByDoctorId: 'DOC-1',
+        orderedByLabel: 'Dr. Petrova',
+        resultsReadyAt: null,
+        returnCode: 'GREEN',
+        returnCreatedAt: null,
+        returnDoctorId: 'DOC-1',
+        returnSpecialty: 'Cardiology',
+        sourceVisitId: 'VISIT-1',
+        status: 'waiting_results',
+        updatedAt: '2026-03-28T08:24:00.000Z',
+      },
+    ])
+
+    expect(getStaffQueueItems([patient], 'LAB-1', true)).toEqual([
+      expect.objectContaining({
+        batchId: 'BATCH-1',
+        itemId: 'LAB-ITEM-1',
+        itemKind: 'lab_item',
+        patientId: 'PAT-1',
+        status: 'queued',
+        title: 'Blood Test results',
+      }),
+    ])
   })
 })

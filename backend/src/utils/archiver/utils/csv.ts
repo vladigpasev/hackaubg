@@ -70,14 +70,18 @@ export function rowsToCsv(rows: Record<string, unknown>[]): string {
   return lines.join('\n');
 }
 
-export function validateTransformRows(rows: unknown): asserts rows is Record<string, unknown>[] {
+export function validateTransformRows(
+  rows: unknown,
+): asserts rows is Record<string, unknown>[] {
   if (!Array.isArray(rows)) {
     throw new Error('Transform must return an array of objects.');
   }
 
   for (const [index, row] of rows.entries()) {
     if (!isPlainObject(row)) {
-      throw new Error(`Transform result row at index ${index} is not a plain object.`);
+      throw new Error(
+        `Transform result row at index ${index} is not a plain object.`,
+      );
     }
   }
 }

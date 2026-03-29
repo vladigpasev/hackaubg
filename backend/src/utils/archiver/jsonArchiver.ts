@@ -22,10 +22,6 @@ function normalizeOptions(
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 async function ensureDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
 }

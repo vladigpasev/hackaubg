@@ -13,6 +13,9 @@ import { MatcherService } from './service/matcher.service';
 import { DoctorController } from './controller/doctor.controller';
 import { SendController } from './controller/send.controller';
 import { WorkflowService } from './workflow/workflow.service';
+import { WorkspaceController } from './workspace/workspace.controller';
+import { WorkspaceService } from './workspace/workspace.service';
+import { WorkflowController } from './workflow/workflow.controller';
 
 @Module({
   imports: [PrismaModule, AuthModule, ScheduleModule.forRoot()],
@@ -23,6 +26,8 @@ import { WorkflowService } from './workflow/workflow.service';
     PatientController,
     DoctorController,
     SendController,
+    WorkspaceController,
+    WorkflowController,
   ],
   providers: [
     RedisService,
@@ -30,6 +35,7 @@ import { WorkflowService } from './workflow/workflow.service';
     PatientService,
     MatcherService,
     WorkflowService,
+    WorkspaceService,
   ],
 })
 export class AppModule {}

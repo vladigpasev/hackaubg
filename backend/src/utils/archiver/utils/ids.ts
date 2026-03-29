@@ -20,7 +20,9 @@ export function sanitizeId(id: string): string {
   safe = safe.replace(/^\.+/, '').replace(/^_+|_+$/g, '');
 
   if (!safe || safe === '.' || safe === '..') {
-    throw new Error(`Invalid id "${id}". The sanitized file name would be empty or unsafe.`);
+    throw new Error(
+      `Invalid id "${id}". The sanitized file name would be empty or unsafe.`,
+    );
   }
 
   return safe;
@@ -32,7 +34,10 @@ export function buildSafeJsonFilePath(folderPath: string, id: string): string {
   const fullPath = resolve(folderPath, filename);
   const resolvedFolder = resolve(folderPath);
 
-  if (!fullPath.startsWith(`${resolvedFolder}/`) && fullPath !== resolve(resolvedFolder, filename)) {
+  if (
+    !fullPath.startsWith(`${resolvedFolder}/`) &&
+    fullPath !== resolve(resolvedFolder, filename)
+  ) {
     throw new Error(`Resolved path for id "${id}" escapes the target folder.`);
   }
 
