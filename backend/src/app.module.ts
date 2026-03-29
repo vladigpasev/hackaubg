@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './auth/auth.module';
+import { DecentralizedController } from './controller/decentralized.controller';
 import { DoctorController } from './controller/doctor.controller';
 import { HealthController } from './controller/health.controller';
 import { PublicController } from './controller/public.controller';
@@ -23,6 +24,7 @@ import { WorkflowService } from './workflow/workflow.service';
     PatientController,
     DoctorController,
     SendController,
+    DecentralizedController,
   ],
   providers: [
     RedisService,
