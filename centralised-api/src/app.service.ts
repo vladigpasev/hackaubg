@@ -28,6 +28,9 @@ export class AppService {
   }
 
   createRecord(record: InstanceRecord): void {
+    this.getAllRecords().find((r) => r.ip === record.ip)?.ip &&
+      this.deleteRecord(record.ip);
+
     const csvLine = [
       this.escapeCsvValue(record.ip),
       String(record.lat),
