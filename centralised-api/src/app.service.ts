@@ -16,19 +16,55 @@ export type InstanceRecord = {
 
 @Injectable()
 export class AppService {
-  orderAdequateHospitals(lat: number, lng: number) {
+  async orderAdequateHospitals(lat: number, lng: number) {
+    const hospitalPort = process.env.HOSPITAL_NODE_PORT ?? '';
     const records = this.getAllRecordsInArea(lat, lng, 20);
-    return records.sort((a, b) => {
-      const distanceA = this.calculateDistance(lat, lng, a.lat, a.lng);
-      const distanceB = this.calculateDistance(lat, lng, b.lat, b.lng);
-      return distanceA - distanceB;
-    });
+    const recordsWithAttachedLoad = await Promise.all(
+      records.map(async (record) => {
+        const url = `${record.ip}:${hospitalPort}/decentralized/current-load`;
+        let resp: Response | undefined = undefined;
+        try {
+          resp = await this.fetchWithTimeout(
+            `${url}?lat=${record.lat}&lng=${record.lng}`,
+          );
+        } catch (e) {
+          console.error(`Failed to fetch load from ${url}:`, e);
+          return { ...record, load: Infinity };
+        }
+        const load = await resp.json();
+        console.log(`Load from ${url}:`, load);
+        return { ...record, load: load };
+      }),
+    );
+
+    // console.log(recordsWithAttachedLoad);
+
+    return recordsWithAttachedLoad;
+  }
+
+  private async fetchWithTimeout(
+    url: string,
+    timeoutMs = 5000,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      return await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
   private readonly csvHeader = 'ip,lat,lng';
   private readonly csvFilePath = join(process.cwd(), 'data', 'instances.csv');
 
   constructor() {
     this.ensureCsvDataStore();
+  }
+
+  parseLocalhostIp(ip: string): string {
+    if (ip === '::1' || ip === '') return 'http://127.0.0.1';
+    return ip;
   }
 
   getHello(): string {

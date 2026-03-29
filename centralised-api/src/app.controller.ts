@@ -27,7 +27,7 @@ export class AppController {
     }
 
     const record: InstanceRecord = {
-      ip: instanceIp!,
+      ip: this.appService.parseLocalhostIp(instanceIp!),
       lat: latNum,
       lng: lngNum,
     };
@@ -48,6 +48,9 @@ export class AppController {
       throw new BadRequestException('Invalid latitude or longitude values.');
     }
 
-    return this.appService.orderAdequateHospitals(latNum, lngNum)[0];
+    const otderedList = (
+      await this.appService.orderAdequateHospitals(latNum, lngNum)
+    )[0];
+    return otderedList;
   }
 }
