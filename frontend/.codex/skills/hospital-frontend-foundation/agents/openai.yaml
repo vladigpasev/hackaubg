@@ -1,7 +1,0 @@
-interface:
-  display_name: "Hospital Frontend Foundation"
-  short_description: "Safe, simple hospital UI rules"
-  default_prompt: "Use $hospital-frontend-foundation to design or implement frontend work for this hospital product."
-
-policy:
-  allow_implicit_invocation: true

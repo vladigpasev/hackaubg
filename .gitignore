@@ -1,0 +1,3 @@
+# Keep local AI agent instructions and Codex state out of git.
+**/AGENTS.md
+**/.codex/

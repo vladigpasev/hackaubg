@@ -1,73 +1,85 @@
-# React + TypeScript + Vite
+# Ambulance Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+`centralized-frontend` is the ambulance-facing client in the HackAUBG demo. It asks the browser for the ambulance's live location, sends that location to the centralised API, and visualizes the returned hospital candidate on a Leaflet map with a direct handoff to Google Maps directions.
 
-Currently, two official plugins are available:
+## Deployment Note
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The intended production model is self-hosted deployment for hospitals. For demo purposes, the ambulance frontend is also hosted at [centralized-frontend-production.up.railway.app](https://centralized-frontend-production.up.railway.app).
 
-## React Compiler
+## What This App Does
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Requests browser geolocation with high accuracy enabled
+- Calls the centralised API's `/api/find-best-fit-hospital` endpoint
+- Draws the ambulance and hospital locations on a Leaflet map
+- Fits the map viewport around both points when both are available
+- Computes a simple point-to-point distance estimate for the UI
+- Builds a Google Maps driving directions link for the selected hospital
 
-## Expanding the ESLint configuration
+## Runtime Flow
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+1. The user opens the ambulance UI.
+2. The browser requests location access.
+3. The app sends `lat` and `lng` to the centralised API.
+4. The centralised API returns a hospital candidate.
+5. The app renders both markers, a route line, distance information, and a directions link.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Environment Variables
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+Copy `.env.example` to `.env`.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `VITE_CENTRALISED_API_BASE_URL` | Yes | Base URL of the dispatch registry service |
+| `PORT` | No | Preview/start port used by the Vite preview script |
+
+Example:
+
+```bash
+VITE_CENTRALISED_API_BASE_URL=http://localhost:3001
+PORT=4174
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Install And Run
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+cp .env.example .env
+npm run dev
 ```
+
+The centralised API must be reachable at `VITE_CENTRALISED_API_BASE_URL`.
+
+## Folder Relationships
+
+| Path | Purpose | Relationship |
+| --- | --- | --- |
+| `src/App.tsx` | Main ambulance flow and map logic | Handles geolocation, API calls, banners, and rendered map state |
+| `src/App.css` | App-specific styling for the ambulance experience | Styles the map layout, panels, and custom markers |
+| `src/index.css` | Global CSS | Base page-level styling and shared variables |
+| `src/assets` | Image assets | Decorative and static assets used by the app |
+| `public` | Static public files | Served directly by Vite |
+
+## Map And Lookup Notes
+
+- The map is built with `react-leaflet` and Leaflet.
+- Custom HTML marker icons are used for the ambulance and hospital pins.
+- When both points exist, the app fits the map bounds around them with padding.
+- If only one point exists, the app flies to that location.
+- The displayed distance is a simple great-circle estimate, not a routed road distance.
+- The directions handoff uses Google Maps with `travelmode=driving`.
+
+## Useful Commands
+
+```bash
+npm run dev
+npm run build
+npm run lint
+```
+
+## Current Validation Status
+
+These commands were re-run against the current repository state:
+
+- `npm run build`: passes
+
+There is currently no automated test suite in this app. Build verification is the active validation path today.

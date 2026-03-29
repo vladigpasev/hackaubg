@@ -15,6 +15,16 @@ import { RedisService } from './service/redis.service';
 import { HospitalSeedRunner } from '../prisma/seed/hospital.seed';
 
 async function maybeSeedDemoData(app: INestApplication) {
+  if (process.env.NODE_ENV === 'production') {
+    if (process.env.SEED_ON_BOOT?.trim() === 'true') {
+      console.warn(
+        'SEED_ON_BOOT is enabled, but demo seeding is disabled in production.',
+      );
+    }
+
+    return;
+  }
+
   if (process.env.SEED_ON_BOOT?.trim() !== 'true') {
     return;
   }
