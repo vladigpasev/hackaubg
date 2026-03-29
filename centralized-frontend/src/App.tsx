@@ -247,7 +247,7 @@ async function findBestFitHospital(origin: Coordinates) {
 function App() {
   const [ambulanceLocation, setAmbulanceLocation] = useState<PositionSnapshot | null>(null)
   const [hospitalMatch, setHospitalMatch] = useState<HospitalMatch | null>(null)
-  const [activeAction, setActiveAction] = useState<'locate' | 'refresh' | 'route' | null>(null)
+  const [activeAction, setActiveAction] = useState<'locate' | 'refresh' | 'find' | 'navigate' | null>(null)
   const [bannerTone, setBannerTone] = useState<BannerTone>('info')
   const [bannerMessage, setBannerMessage] = useState('Getting the ambulance location.')
 
@@ -265,9 +265,9 @@ function App() {
       : 'Not matched yet'
 
   const mapSummary = hospitalMatch
-    ? 'The route opens in a new Google Maps tab using the latest ambulance position.'
+    ? `Best hospital found${routeDistance !== null ? `, ${formatDistanceKm(routeDistance)} away.` : '.'}`
     : hasLocation
-      ? 'Location is ready. Update it if the ambulance has moved, then open the route.'
+      ? 'Location is ready. Find the best hospital, then start navigation.'
       : 'Waiting for the crew location.'
 
   useEffect(() => {
@@ -318,20 +318,9 @@ function App() {
     }
   }
 
-  async function handleDirections() {
-    setActiveAction('route')
+  async function handleFindHospital() {
+    setActiveAction('find')
     setBannerTone('info')
-    const directionsTab = window.open('about:blank', '_blank')
-
-    if (!directionsTab) {
-      setBannerTone('error')
-      setBannerMessage('Google Maps could not open in a new tab. Allow pop-ups and try again.')
-      setActiveAction(null)
-      return
-    }
-
-    directionsTab.opener = null
-
     setBannerMessage('Checking the latest location and finding the best nearby hospital.')
 
     try {
@@ -341,18 +330,40 @@ function App() {
       const bestFitHospital = await findBestFitHospital(liveLocation)
       setHospitalMatch(bestFitHospital)
       setBannerTone('success')
-      setBannerMessage('Opening Google Maps in a new tab.')
-
-      directionsTab.location.href = buildDirectionsUrl(liveLocation, bestFitHospital)
+      const distanceLabel = formatDistanceKm(calculateDistanceKm(liveLocation, bestFitHospital))
+      setBannerMessage(`Best hospital found, ${distanceLabel} away.`)
     } catch (error) {
-      directionsTab.close()
       setBannerTone('error')
       setBannerMessage(
-        error instanceof Error ? error.message : 'Unable to open a route right now.',
+        error instanceof Error ? error.message : 'Unable to find a hospital right now.',
       )
     } finally {
       setActiveAction(null)
     }
+  }
+
+  function handleNavigateToHospital() {
+    if (!ambulanceLocation || !hospitalMatch) {
+      setBannerTone('error')
+      setBannerMessage('Find a hospital first before opening navigation.')
+      return
+    }
+
+    setActiveAction('navigate')
+    const directionsTab = window.open(buildDirectionsUrl(ambulanceLocation, hospitalMatch), '_blank')
+
+    if (!directionsTab) {
+      setBannerTone('error')
+      setBannerMessage('Google Maps could not open in a new tab. Allow pop-ups and try again.')
+      setActiveAction(null)
+      return
+    }
+
+    directionsTab.opener = null
+    directionsTab.focus()
+    setBannerTone('success')
+    setBannerMessage('Opening Google Maps in a new tab.')
+    setActiveAction(null)
   }
 
   return (
@@ -364,11 +375,11 @@ function App() {
             Centralised Dispatch
           </div>
 
-          <h1 className="dispatch-title">Guide the ambulance to the right hospital.</h1>
+          <h1 className="dispatch-title">Help the crew reach care without losing time.</h1>
 
           <p className="dispatch-copy">
-            The page checks the crew location as soon as it opens. Update it if the ambulance has moved, then open the
-            route to the best nearby hospital.
+            The location is checked as soon as the page opens, so the team can update it if needed and head straight
+            to the hospital that makes the most sense.
           </p>
 
           <div className="dispatch-actions">
@@ -391,11 +402,11 @@ function App() {
               className="dispatch-button dispatch-button--route"
               disabled={activeAction !== null}
               onClick={() => {
-                void handleDirections()
+                void handleFindHospital()
               }}
               type="button"
             >
-              {activeAction === 'route' ? 'Preparing route...' : 'Open route to hospital'}
+              {activeAction === 'find' ? 'Finding hospital...' : 'Find hospital'}
             </button>
           </div>
 
@@ -482,16 +493,25 @@ function App() {
           <div className="dispatch-map-footer">
             <p className="dispatch-map-footer__copy">{mapSummary}</p>
 
-            <div className="dispatch-legend" aria-label="Map legend">
-              <span className="dispatch-legend__item">
-                <span className="dispatch-legend__swatch dispatch-legend__swatch--ambulance" />
-                Ambulance
-              </span>
-              <span className="dispatch-legend__item">
-                <span className="dispatch-legend__swatch dispatch-legend__swatch--hospital" />
-                Hospital
-              </span>
-            </div>
+            <button
+              className="dispatch-button dispatch-button--route dispatch-button--map"
+              disabled={!hospitalMatch || activeAction !== null}
+              onClick={handleNavigateToHospital}
+              type="button"
+            >
+              {activeAction === 'navigate' ? 'Opening navigation...' : 'Navigate to hospital'}
+            </button>
+          </div>
+
+          <div className="dispatch-legend" aria-label="Map legend">
+            <span className="dispatch-legend__item">
+              <span className="dispatch-legend__swatch dispatch-legend__swatch--ambulance" />
+              Ambulance
+            </span>
+            <span className="dispatch-legend__item">
+              <span className="dispatch-legend__swatch dispatch-legend__swatch--hospital" />
+              Hospital
+            </span>
           </div>
         </div>
       </section>
