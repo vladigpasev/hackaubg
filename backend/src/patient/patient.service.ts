@@ -16,6 +16,7 @@ import { AuthUser } from 'src/auth/auth.types';
 import * as tar from 'tar';
 import { isUserRole } from '../auth/auth.constants';
 import { AuthService } from '../auth/auth.service';
+import { PrismaService } from '../service/prisma.service';
 import { RedisService } from '../service/redis.service';
 import { StreamService } from '../service/stream.service';
 import { TRIAGE_STATES } from '../shared.types';
@@ -24,6 +25,7 @@ import {
   getSofiaDateString,
 } from '../utils/archiver/jsonArchiver';
 import {
+  getDoctorOfflineKey,
   getPatientQueueKey,
   getPatientRecordKey,
   hydratePatientRecord,
@@ -52,6 +54,23 @@ export class PatientService {
     const client = this.redisService.client;
 
     try {
+      const doctors = await this.prismaService.user.findMany({
+        where: { role: 'doctor' },
+        select: { username: true },
+      });
+
+      const offlineDoctorKeys = await client.keys(
+        `${getDoctorOfflineKey('')}*`,
+      );
+      const offlineDoctorIds = new Set(
+        offlineDoctorKeys.map((key) =>
+          key.slice(getDoctorOfflineKey('').length),
+        ),
+      );
+      const onlineDoctors = doctors.filter(
+        (doctor) => !offlineDoctorIds.has(doctor.username),
+      );
+
       const queueKeys = await client.keys(`${getPatientQueueKey('')}*`);
 
       if (queueKeys.length === 0) {
@@ -62,36 +81,44 @@ export class PatientService {
         queueKeys.map((key) => client.zRange(key, 0, -1)),
       );
 
-      return queueEntriesByKey.flat().reduce((sum, rawEntry) => {
-        let parsedEntry: unknown;
+      const intensityNotEvaluatedForCurrentStaffing = queueEntriesByKey
+        .flat()
+        .reduce((sum, rawEntry) => {
+          let parsedEntry: unknown;
 
-        try {
-          parsedEntry = JSON.parse(rawEntry) as unknown;
-        } catch {
+          try {
+            parsedEntry = JSON.parse(rawEntry) as unknown;
+          } catch {
+            return sum;
+          }
+
+          if (
+            !this.isObject(parsedEntry) ||
+            typeof parsedEntry.triage_state !== 'string'
+          ) {
+            return sum;
+          }
+
+          if (parsedEntry.triage_state === 'GREEN') {
+            return sum + 1;
+          }
+
+          if (parsedEntry.triage_state === 'YELLOW') {
+            return sum + 1.5;
+          }
+
+          if (parsedEntry.triage_state === 'RED') {
+            return sum + 2;
+          }
+
           return sum;
-        }
+        }, 0);
 
-        if (
-          !this.isObject(parsedEntry) ||
-          typeof parsedEntry.triage_state !== 'string'
-        ) {
-          return sum;
-        }
+      if (onlineDoctors.length === 0) {
+        return intensityNotEvaluatedForCurrentStaffing;
+      }
 
-        if (parsedEntry.triage_state === 'GREEN') {
-          return sum + 1;
-        }
-
-        if (parsedEntry.triage_state === 'YELLOW') {
-          return sum + 1.5;
-        }
-
-        if (parsedEntry.triage_state === 'RED') {
-          return sum + 2;
-        }
-
-        return sum;
-      }, 0);
+      return intensityNotEvaluatedForCurrentStaffing / onlineDoctors.length;
     } catch {
       throw new ServiceUnavailableException('Unable to calculate current load');
     }
@@ -412,6 +439,7 @@ export class PatientService {
     private readonly redisService: RedisService,
     private readonly streamService: StreamService,
     private readonly authService: AuthService,
+    private readonly prismaService: PrismaService,
   ) {}
 
   async getPatientDetailsByPhoneNumber(
