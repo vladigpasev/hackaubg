@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AdminController } from './admin/admin.controller';
+import { AdminService } from './admin/admin.service';
 import { AuthModule } from './auth/auth.module';
 import { HealthController } from './controller/health.controller';
 import { PublicController } from './controller/public.controller';
@@ -16,8 +18,9 @@ import { StreamService } from './service/stream.service';
     HealthController,
     StreamController,
     PublicController,
+    AdminController,
     PatientController,
   ],
-  providers: [RedisService, StreamService, PatientService],
+  providers: [RedisService, StreamService, PatientService, AdminService],
 })
 export class AppModule {}
