@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AdminController } from './admin/admin.controller';
+import { AdminService } from './admin/admin.service';
 import { AuthModule } from './auth/auth.module';
 import { HealthController } from './controller/health.controller';
 import { PublicController } from './controller/public.controller';
@@ -23,6 +25,7 @@ import { WorkflowController } from './workflow/workflow.controller';
     HealthController,
     StreamController,
     PublicController,
+    AdminController,
     PatientController,
     DoctorController,
     SendController,
@@ -33,6 +36,7 @@ import { WorkflowController } from './workflow/workflow.controller';
     RedisService,
     StreamService,
     PatientService,
+    AdminService,
     MatcherService,
     WorkflowService,
     WorkspaceService,

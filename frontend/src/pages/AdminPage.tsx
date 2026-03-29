@@ -1,35 +1,37 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { formatRoleLabel } from '../auth/roles'
 import { useAuth } from '../auth/useAuth'
+import { ArchivedPatientDetailsModal } from '../features/admin/components/ArchivedPatientDetailsModal'
+import { EmptyState, formatDateTime, RoleBadge, SpecialtyList, SummaryCard, TriageBadge } from '../features/admin/components/AdminPrimitives'
+import {
+  createEmptyStaffForm,
+  createStaffFormFromUser,
+  DeleteStaffModal,
+  StaffEditorModal,
+  type StaffFormErrors,
+  type StaffFormState,
+  type StaffModalMode,
+} from '../features/admin/components/StaffManagementModals'
+import {
+  type ArchivedPatient,
+  type ArchiveResponse,
+  createStaff,
+  deleteStaff,
+  fetchArchive,
+  fetchStaff,
+  type StaffFormPayload,
+  type StaffUser,
+  updateStaff,
+} from '../features/admin/services/adminApi'
+import { buildSpecialtyCatalog } from '../features/receptionist/services/clinicianDirectory'
+import type { DoctorProfile } from '../features/receptionist/types/patient'
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:3000').replace(/\/+$/, '')
-
-interface ArchivedUser {
-  username: string
-  role: string
-  isTester: boolean
-  specialties: string[]
+interface FeedbackState {
+  message: string
+  tone: 'success' | 'error'
 }
 
-interface ArchivedPatient {
-  id: string
-  name: string
-  phone_number: string
-  triage_state: string
-  admitted_at: string
-  notes: string[]
-}
-
-interface ArchiveResponse {
-  date: string
-  users: Record<string, ArchivedUser>
-  patients: ArchivedPatient[]
-}
-
-const dateTimeFormatter = new Intl.DateTimeFormat('en-GB', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-})
+type StaffSectionKey = 'registry' | 'nurses' | 'doctors'
 
 function toLocalDateTimeInputValue(date: Date) {
   const year = date.getFullYear()
@@ -41,280 +43,550 @@ function toLocalDateTimeInputValue(date: Date) {
   return `${year}-${month}-${day}T${hours}:${minutes}`
 }
 
-function formatDateTime(value: string) {
-  return dateTimeFormatter.format(new Date(value))
+function buildStaffPayload(form: StaffFormState, requirePassword: boolean): StaffFormPayload {
+  const username = form.username.trim()
+  const password = form.password.trim()
+
+  if (!username) {
+    throw new Error('Username is required.')
+  }
+
+  if (requirePassword && password.length === 0) {
+    throw new Error('Password is required for new staff accounts.')
+  }
+
+  const payload: StaffFormPayload = {
+    role: form.role,
+    username,
+  }
+
+  if (password.length > 0) {
+    payload.password = password
+  }
+
+  if (form.role === 'doctor') {
+    payload.isTester = form.isTester
+    payload.specialties = form.specialties
+  } else {
+    payload.isTester = false
+    payload.specialties = []
+  }
+
+  return payload
 }
 
-function getErrorMessage(payload: unknown, fallbackMessage: string) {
-  if (!payload || typeof payload !== 'object' || !('message' in payload)) {
-    return fallbackMessage
+function validateArchiveInput(dateTimeValue: string) {
+  if (!dateTimeValue.trim()) {
+    return 'Archive date and time is required.'
   }
 
-  const message = (payload as { message?: unknown }).message
-
-  if (typeof message === 'string' && message.trim().length > 0) {
-    return message
-  }
-
-  if (Array.isArray(message)) {
-    const firstMessage = message.find((item): item is string => typeof item === 'string' && item.trim().length > 0)
-
-    if (firstMessage) {
-      return firstMessage
-    }
-  }
-
-  return fallbackMessage
-}
-
-async function fetchArchive(dateTimeValue: string): Promise<ArchiveResponse> {
   const targetDate = new Date(dateTimeValue)
 
   if (Number.isNaN(targetDate.getTime())) {
-    throw new Error('Enter a valid date and time.')
+    return 'Enter a valid archive date and time.'
   }
 
-  const response = await fetch(
-    `${API_BASE_URL}/patient/archive/${encodeURIComponent(targetDate.toISOString())}`,
-    {
-      credentials: 'include',
-      method: 'GET',
-    },
-  )
+  return null
+}
 
-  const payload: unknown = await response.json().catch(() => null)
+function validateStaffForm(form: StaffFormState, mode: StaffModalMode): StaffFormErrors {
+  const errors: StaffFormErrors = {}
 
-  if (!response.ok) {
-    throw new Error(
-      getErrorMessage(payload, 'Archived records are unavailable right now.'),
-    )
+  if (!form.username.trim()) {
+    errors.username = 'Username is required.'
   }
 
-  return payload as ArchiveResponse
+  if (mode === 'create' && form.password.trim().length === 0) {
+    errors.password = 'Password is required.'
+  } else if (form.password.trim().length > 0 && form.password.trim().length < 8) {
+    errors.password = 'Password must be at least 8 characters.'
+  }
+
+  if (!form.role) {
+    errors.role = 'Role is required.'
+  }
+
+  if (form.role === 'doctor' && form.specialties.length === 0) {
+    errors.specialties = 'Doctor must have at least one specialty.'
+  }
+
+  return errors
+}
+
+function hasStaffFormErrors(errors: StaffFormErrors) {
+  return Object.values(errors).some((value) => typeof value === 'string' && value.length > 0)
 }
 
 export function AdminPage() {
   const { logout, user } = useAuth()
   const activeUser = user!
+
+  const [staff, setStaff] = useState<StaffUser[]>([])
   const [archive, setArchive] = useState<ArchiveResponse | null>(null)
-  const [dateTimeValue, setDateTimeValue] = useState(() =>
-    toLocalDateTimeInputValue(new Date()),
+  const [dateTimeValue, setDateTimeValue] = useState(() => toLocalDateTimeInputValue(new Date()))
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
+  const [staffError, setStaffError] = useState<string | null>(null)
+  const [isArchiveLoading, setIsArchiveLoading] = useState(false)
+  const [isStaffLoading, setIsStaffLoading] = useState(true)
+  const [busyAction, setBusyAction] = useState<'create' | 'update' | 'delete' | null>(null)
+  const [selectedArchivedPatient, setSelectedArchivedPatient] = useState<ArchivedPatient | null>(null)
+  const [staffModalMode, setStaffModalMode] = useState<StaffModalMode | null>(null)
+  const [staffForm, setStaffForm] = useState<StaffFormState>(createEmptyStaffForm)
+  const [staffFormErrors, setStaffFormErrors] = useState<StaffFormErrors>({})
+  const [editingUsername, setEditingUsername] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<StaffUser | null>(null)
+  const [openSections, setOpenSections] = useState<Record<StaffSectionKey, boolean>>({
+    doctors: true,
+    nurses: false,
+    registry: true,
+  })
+
+  const groupedStaff = useMemo(
+    () => ({
+      doctors: staff.filter((member) => member.role === 'doctor'),
+      nurses: staff.filter((member) => member.role === 'nurse'),
+      registry: staff.filter((member) => member.role === 'registry'),
+    }),
+    [staff],
   )
-  const [error, setError] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
 
-  const archivedUsers = archive
-    ? Object.values(archive.users).sort((left, right) =>
-        left.username.localeCompare(right.username),
-      )
-    : []
+  const specialtyOptions = useMemo(() => {
+    const doctorProfiles: DoctorProfile[] = groupedStaff.doctors.map((member) => ({
+      displayName: member.username,
+      id: `admin-${member.username}`,
+      isTester: member.isTester,
+      specialties: [...member.specialties],
+      username: member.username,
+    }))
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    return buildSpecialtyCatalog(doctorProfiles)
+  }, [groupedStaff.doctors])
+
+  useEffect(() => {
+    async function loadInitialStaff() {
+      try {
+        setIsStaffLoading(true)
+        setStaffError(null)
+        const nextStaff = await fetchStaff()
+        setStaff(nextStaff.sort((left, right) => left.username.localeCompare(right.username)))
+      } catch (error) {
+        setStaffError(error instanceof Error ? error.message : 'Staff records could not be loaded.')
+      } finally {
+        setIsStaffLoading(false)
+      }
+    }
+
+    void loadInitialStaff()
+  }, [])
+
+  useEffect(() => {
+    if (!feedback || feedback.tone !== 'success') {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => setFeedback(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [feedback])
+
+  function updateStaffForm(nextValue: Partial<StaffFormState>) {
+    const nextForm = { ...staffForm, ...nextValue }
+    setStaffForm(nextForm)
+
+    if (staffModalMode && hasStaffFormErrors(staffFormErrors)) {
+      setStaffFormErrors(validateStaffForm(nextForm, staffModalMode))
+    }
+  }
+
+  function toggleSection(section: StaffSectionKey) {
+    setOpenSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }))
+  }
+
+  function addSpecialty(value: string) {
+    const normalizedValue = value.trim()
+
+    if (!normalizedValue.length) {
+      return
+    }
+
+    if (staffForm.specialties.some((specialty) => specialty.toLowerCase() === normalizedValue.toLowerCase())) {
+      setStaffForm({
+        ...staffForm,
+        specialtyQuery: '',
+      })
+      return
+    }
+
+    const nextForm: StaffFormState = {
+      ...staffForm,
+      specialties: [...staffForm.specialties, normalizedValue],
+      specialtyQuery: '',
+    }
+
+    setStaffForm(nextForm)
+
+    if (staffModalMode) {
+      setStaffFormErrors(validateStaffForm(nextForm, staffModalMode))
+    }
+  }
+
+  function removeSpecialty(value: string) {
+    const nextForm: StaffFormState = {
+      ...staffForm,
+      specialties: staffForm.specialties.filter((specialty) => specialty !== value),
+    }
+
+    setStaffForm(nextForm)
+
+    if (staffModalMode) {
+      setStaffFormErrors(validateStaffForm(nextForm, staffModalMode))
+    }
+  }
+
+  function openCreateModal() {
+    setEditingUsername(null)
+    setStaffForm(createEmptyStaffForm())
+    setStaffFormErrors({})
+    setStaffModalMode('create')
+  }
+
+  function openEditModal(member: StaffUser) {
+    setEditingUsername(member.username)
+    setStaffForm(createStaffFormFromUser(member))
+    setStaffFormErrors({})
+    setStaffModalMode('edit')
+  }
+
+  async function reloadStaffDirectory(successMessage?: string) {
+    const nextStaff = await fetchStaff()
+    setStaff(nextStaff.sort((left, right) => left.username.localeCompare(right.username)))
+
+    if (successMessage) {
+      setFeedback({ message: successMessage, tone: 'success' })
+    }
+  }
+
+  async function handleArchiveSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setIsLoading(true)
-    setError(null)
+    setIsArchiveLoading(true)
+    setArchiveError(null)
+
+    const archiveValidationError = validateArchiveInput(dateTimeValue)
+
+    if (archiveValidationError) {
+      setArchiveError(archiveValidationError)
+      setIsArchiveLoading(false)
+      return
+    }
 
     try {
       const nextArchive = await fetchArchive(dateTimeValue)
       setArchive(nextArchive)
-    } catch (nextError) {
+      setFeedback({ message: `Archive loaded for ${nextArchive.date}.`, tone: 'success' })
+    } catch (error) {
       setArchive(null)
-      setError(
-        nextError instanceof Error
-          ? nextError.message
-          : 'Archived records are unavailable right now.',
-      )
+      setArchiveError(error instanceof Error ? error.message : 'Archive data is unavailable right now.')
     } finally {
-      setIsLoading(false)
+      setIsArchiveLoading(false)
+    }
+  }
+
+  async function handleStaffSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setStaffError(null)
+
+    if (!staffModalMode) {
+      return
+    }
+
+    const nextErrors = validateStaffForm(staffForm, staffModalMode)
+    setStaffFormErrors(nextErrors)
+
+    if (hasStaffFormErrors(nextErrors)) {
+      return
+    }
+
+    try {
+      if (staffModalMode === 'create') {
+        setBusyAction('create')
+        const payload = buildStaffPayload(staffForm, true)
+        await createStaff(payload)
+        await reloadStaffDirectory(`${payload.username} was created.`)
+      } else if (staffModalMode === 'edit' && editingUsername) {
+        setBusyAction('update')
+        const payload = buildStaffPayload(staffForm, false)
+        await updateStaff(editingUsername, payload)
+        await reloadStaffDirectory(`${payload.username} was updated.`)
+      }
+
+      setStaffModalMode(null)
+      setEditingUsername(null)
+      setStaffForm(createEmptyStaffForm())
+      setStaffFormErrors({})
+    } catch (error) {
+      setStaffError(error instanceof Error ? error.message : 'Staff changes could not be saved.')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function handleDeleteStaff() {
+    if (!deleteTarget) {
+      return
+    }
+
+    setStaffError(null)
+    setBusyAction('delete')
+
+    try {
+      await deleteStaff(deleteTarget.username)
+      await reloadStaffDirectory(`${deleteTarget.username} was deleted.`)
+      setDeleteTarget(null)
+    } catch (error) {
+      setStaffError(error instanceof Error ? error.message : 'The staff account could not be deleted.')
+    } finally {
+      setBusyAction(null)
     }
   }
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] px-4 py-6 text-[var(--text-primary)] sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header className="rounded-[1.5rem] border border-[var(--border-soft)] bg-white/92 p-5 shadow-[0_18px_50px_rgba(19,56,78,0.06)]">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="max-w-3xl">
-              <span className="inline-flex items-center gap-2 rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--teal-strong)]">
-                Archive console
-              </span>
-              <h1 className="mt-4 text-3xl font-semibold sm:text-4xl">
-                Review archived hospital state by Sofia date.
-              </h1>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)] sm:text-base">
-                Use an exact date and time to load the archive bundle resolved on the backend. This page is limited to
-                admin users and keeps archival inspection separate from the live clinical queue.
-              </p>
-            </div>
-
-            <div className="flex w-full max-w-md flex-col gap-3 rounded-[1.25rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                  Signed in
-                </p>
-                <p className="mt-2 text-base font-semibold text-[var(--text-primary)]">
-                  {activeUser.username}
-                </p>
-                <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  {formatRoleLabel(activeUser.role)} access is active.
+    <>
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(64,167,163,0.16),transparent_28%),linear-gradient(180deg,#f7fbfd_0%,#eef5f8_100%)] px-4 py-6 text-[var(--text-primary)] sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6">
+          <header className="rounded-[1.6rem] border border-[var(--border-soft)] bg-white/92 p-5 shadow-[0_24px_60px_rgba(19,56,78,0.08)]">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+              <div className="max-w-4xl">
+                <span className="inline-flex items-center gap-2 rounded-full border border-[var(--blue-border)] bg-[var(--blue-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--blue-text)]">
+                  Admin workspace
+                </span>
+                <h1 className="mt-4 text-[2rem] font-semibold tracking-tight sm:text-[2.35rem]">Staff and archive control panel.</h1>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)] sm:text-base">
+                  Manage staff and review archived cases.
                 </p>
               </div>
-              <button
-                className="min-h-12 rounded-full border border-[var(--border-soft)] bg-white px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
-                onClick={() => {
-                  void logout()
-                }}
-                type="button"
-              >
-                Sign out
-              </button>
-            </div>
-          </div>
-        </header>
 
-        <section className="grid gap-6 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]">
-          <section className="rounded-[1.35rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_16px_36px_rgba(19,56,78,0.05)]">
-            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-              Archive lookup
-            </p>
-            <form className="mt-4 space-y-4" onSubmit={(event) => void handleSubmit(event)}>
-              <label className="block">
-                <span className="text-sm font-semibold text-[var(--text-primary)]">Date and time</span>
-                <input
-                  className="mt-2 min-h-12 w-full rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
-                  onChange={(event) => setDateTimeValue(event.target.value)}
-                  type="datetime-local"
-                  value={dateTimeValue}
-                />
-              </label>
-
-              <p className="text-sm leading-6 text-[var(--text-secondary)]">
-                The backend resolves the archive folder using Sofia time and reads archived patients plus the archived
-                users summary from the same bundle.
-              </p>
-
-              <button
-                className="min-h-12 w-full rounded-[1rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
-                disabled={isLoading}
-                type="submit"
-              >
-                {isLoading ? 'Loading archive...' : 'Load archive'}
-              </button>
-            </form>
-
-            {error ? (
-              <div className="mt-4 rounded-[1rem] border border-[var(--red-border)] bg-[var(--red-soft)] p-4 text-sm font-semibold text-[var(--red-text)]">
-                {error}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="space-y-6">
-            <section className="grid gap-3 sm:grid-cols-3">
-              {[
-                ['Archive date', archive?.date ?? 'Not loaded'],
-                ['Archived users', archive ? String(archivedUsers.length) : '0'],
-                ['Archived patients', archive ? String(archive.patients.length) : '0'],
-              ].map(([label, value]) => (
-                <article
-                  key={label}
-                  className="rounded-[1rem] border border-[var(--border-soft)] bg-white px-4 py-4 shadow-[0_12px_32px_rgba(19,56,78,0.04)]"
+              <div className="w-full max-w-sm rounded-[1.3rem] border border-[var(--border-soft)] bg-[linear-gradient(180deg,rgba(64,167,163,0.08),rgba(64,167,163,0.02))] p-4">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">Signed in</p>
+                <p className="mt-3 text-lg font-semibold text-[var(--text-primary)]">{activeUser.username}</p>
+                <p className="mt-1 text-sm text-[var(--text-secondary)]">{formatRoleLabel(activeUser.role)} access is active.</p>
+                <button
+                  className="mt-4 min-h-12 rounded-full border border-[var(--border-soft)] bg-white px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]"
+                  onClick={() => { void logout() }}
+                  type="button"
                 >
-                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                    {label}
-                  </p>
-                  <p className="mt-2 text-lg font-semibold text-[var(--text-primary)] break-words">{value}</p>
-                </article>
-              ))}
+                  Sign out
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <SummaryCard label="Active staff" value={String(staff.length)} />
+            <SummaryCard label="Doctors" value={String(groupedStaff.doctors.length)} />
+            <SummaryCard label="Archived patients" value={String(archive?.patients.length ?? 0)} />
+          </section>
+
+          {(staffError || archiveError) && (
+            <div className="rounded-[1.1rem] border border-[var(--red-border)] bg-[var(--red-soft)] px-4 py-3 text-sm font-semibold text-[var(--red-text)]">
+              {staffError ?? archiveError}
+            </div>
+          )}
+
+          <section className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,1.35fr)]">
+            <section className="space-y-6">
+              <section className="rounded-[1.35rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_16px_36px_rgba(19,56,78,0.05)]">
+                <div className="max-w-xl">
+                  <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">Archive panel</p>
+                  <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">Archived cases</h2>
+                </div>
+
+                <form className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]" onSubmit={(event) => void handleArchiveSubmit(event)}>
+                  <label className="block">
+                    <span className="text-sm font-semibold text-[var(--text-primary)]">Archive date and time</span>
+                    <input
+                      className="mt-2 min-h-12 w-full rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] px-3 py-2.5 text-sm outline-none transition focus:border-[var(--teal-strong)]"
+                      onChange={(event) => setDateTimeValue(event.target.value)}
+                      type="datetime-local"
+                      value={dateTimeValue}
+                    />
+                  </label>
+
+                  <button className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white disabled:opacity-60 lg:self-end" disabled={isArchiveLoading} type="submit">
+                    {isArchiveLoading ? 'Loading archive...' : 'Load archive'}
+                  </button>
+                </form>
+              </section>
+
+              <section className="rounded-[1.35rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_16px_36px_rgba(19,56,78,0.05)]">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">Cases</p>
+                    <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">Archived patients</h2>
+                  </div>
+                  <span className="text-sm text-[var(--text-secondary)]">{archive?.patients.length ?? 0} patients</span>
+                </div>
+
+                {!archive ? (
+                  <div className="mt-4"><EmptyState message="Load an archive to inspect archived patients and case history." /></div>
+                ) : archive.patients.length === 0 ? (
+                  <div className="mt-4"><EmptyState message="No patients were archived in this snapshot." /></div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {archive.patients.map((patient) => (
+                      <article key={patient.id} className="rounded-[1.15rem] border border-[var(--border-soft)] bg-[linear-gradient(180deg,#ffffff_0%,var(--surface-soft)_100%)] p-4 shadow-[0_10px_24px_rgba(19,56,78,0.04)]">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <TriageBadge triageState={patient.triage_state} />
+                              <span className="rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1 text-[11px] text-[var(--text-secondary)]">{patient.phone_number}</span>
+                            </div>
+                            <h3 className="mt-3 text-base font-semibold text-[var(--text-primary)]">{patient.name}</h3>
+                            <p className="mt-1 text-sm text-[var(--text-secondary)]">Admitted {formatDateTime(patient.admitted_at)}</p>
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
+                              <span className="rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1">{patient.queue.length} queue</span>
+                              <span className="rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1">{patient.history.length} history</span>
+                              <span className="rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1">{patient.notes.length} notes</span>
+                            </div>
+                          </div>
+
+                          <button className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] bg-white px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)]" onClick={() => setSelectedArchivedPatient(patient)} type="button">
+                            More details
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
             </section>
 
             <section className="rounded-[1.35rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_16px_36px_rgba(19,56,78,0.05)]">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold text-[var(--text-primary)]">Archived users</h2>
-                {archive ? (
-                  <span className="text-xs text-[var(--text-muted)]">Sorted by username</span>
-                ) : null}
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">Managing staff</p>
+                  <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">Staff</h2>
+                </div>
+
+                <button className="min-h-12 shrink-0 whitespace-nowrap rounded-[1rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-5 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] md:self-start" onClick={openCreateModal} type="button">
+                  Create staff
+                </button>
               </div>
 
-              {!archive ? (
-                <div className="mt-4 rounded-[1rem] bg-[var(--surface-soft)] px-4 py-10 text-center text-sm text-[var(--text-secondary)]">
-                  Load an archive to inspect the users snapshot.
-                </div>
-              ) : archivedUsers.length === 0 ? (
-                <div className="mt-4 rounded-[1rem] bg-[var(--surface-soft)] px-4 py-10 text-center text-sm text-[var(--text-secondary)]">
-                  No archived users were found for this date.
-                </div>
-              ) : (
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  {archivedUsers.map((archivedUser) => (
-                    <article
-                      key={archivedUser.username}
-                      className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-[var(--teal-border)] bg-[var(--teal-soft)] px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--teal-strong)]">
-                          {archivedUser.role}
-                        </span>
-                        {archivedUser.isTester ? (
-                          <span className="rounded-full border border-[var(--amber-border)] bg-[var(--amber-soft)] px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--amber-text)]">
-                            Tester
-                          </span>
-                        ) : null}
-                      </div>
-                      <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">{archivedUser.username}</p>
-                      <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                        {archivedUser.specialties.length > 0
-                          ? archivedUser.specialties.join(' • ')
-                          : 'No specialties archived'}
-                      </p>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
+              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                <SummaryCard label="Registry" value={String(groupedStaff.registry.length)} />
+                <SummaryCard label="Nurses" value={String(groupedStaff.nurses.length)} />
+                <SummaryCard label="Doctors" value={String(groupedStaff.doctors.length)} />
+              </div>
 
-            <section className="rounded-[1.35rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_16px_36px_rgba(19,56,78,0.05)]">
-              <h2 className="text-lg font-semibold text-[var(--text-primary)]">Archived patients</h2>
-
-              {!archive ? (
-                <div className="mt-4 rounded-[1rem] bg-[var(--surface-soft)] px-4 py-10 text-center text-sm text-[var(--text-secondary)]">
-                  Load an archive to inspect archived patients.
-                </div>
-              ) : archive.patients.length === 0 ? (
-                <div className="mt-4 rounded-[1rem] bg-[var(--surface-soft)] px-4 py-10 text-center text-sm text-[var(--text-secondary)]">
-                  No patients were archived for this date.
-                </div>
+              {isStaffLoading ? (
+                <div className="mt-6"><EmptyState message="Loading staff directory..." /></div>
               ) : (
-                <div className="mt-4 grid gap-3">
-                  {archive.patients.map((patient) => (
-                    <article
-                      key={patient.id}
-                      className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-                          {patient.triage_state}
+                <div className="mt-6 space-y-6">
+                  {(
+                    [
+                      ['registry', 'Registry', groupedStaff.registry],
+                      ['nurses', 'Nurses', groupedStaff.nurses],
+                      ['doctors', 'Doctors', groupedStaff.doctors],
+                    ] as const
+                  ).map(([sectionKey, label, members]) => (
+                    <section key={sectionKey} className="rounded-[1.1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)]">
+                      <button
+                        className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left transition hover:bg-white/70"
+                        onClick={() => toggleSection(sectionKey)}
+                        type="button"
+                      >
+                        <div className="min-w-0">
+                          <h3 className="text-lg font-semibold text-[var(--text-primary)]">{label}</h3>
+                          <p className="mt-1 text-sm text-[var(--text-secondary)]">{members.length} accounts</p>
+                        </div>
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-soft)] bg-white text-lg text-[var(--text-secondary)]">
+                          {openSections[sectionKey] ? '-' : '+'}
                         </span>
-                        <span className="rounded-full border border-[var(--border-soft)] bg-white px-2.5 py-1 text-xs text-[var(--text-secondary)]">
-                          {patient.id}
-                        </span>
-                      </div>
-                      <h3 className="mt-3 text-base font-semibold text-[var(--text-primary)]">{patient.name}</h3>
-                      <p className="mt-1 text-sm text-[var(--text-secondary)]">{patient.phone_number}</p>
-                      <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                        Admitted {formatDateTime(patient.admitted_at)}
-                      </p>
-                      <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                        Notes archived: {patient.notes.length}
-                      </p>
-                    </article>
+                      </button>
+
+                      {openSections[sectionKey] ? (
+                        members.length === 0 ? (
+                          <div className="px-4 pb-4">
+                            <EmptyState message={`No ${label.toLowerCase()} accounts are configured.`} />
+                          </div>
+                        ) : (
+                          <div className="grid gap-3 border-t border-[var(--border-soft)] px-4 py-4 lg:grid-cols-2">
+                            {members.map((member) => (
+                              <article key={member.username} className="rounded-[1rem] border border-[var(--border-soft)] bg-white p-4">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <RoleBadge role={member.role} />
+                                  {member.isTester ? <span className="rounded-full border border-[var(--amber-border)] bg-[var(--amber-soft)] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--amber-text)]">Tester</span> : null}
+                                </div>
+
+                                <h4 className="mt-3 text-base font-semibold text-[var(--text-primary)]">{member.username}</h4>
+                                <div className="mt-3">
+                                  <SpecialtyList specialties={member.specialties} />
+                                </div>
+
+                                <div className="mt-4 flex flex-wrap gap-2">
+                                  <button className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-white" onClick={() => openEditModal(member)} type="button">
+                                    Edit
+                                  </button>
+                                  <button className="min-h-12 rounded-[1rem] border border-[var(--red-border)] bg-[var(--red-soft)] px-4 py-2 text-sm font-semibold text-[var(--red-text)] transition hover:bg-white" onClick={() => setDeleteTarget(member)} type="button">
+                                    Delete
+                                  </button>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        )
+                      ) : null}
+                    </section>
                   ))}
                 </div>
               )}
             </section>
           </section>
-        </section>
-      </div>
-    </main>
+
+          {feedback ? (
+            <div className="pointer-events-none fixed right-4 bottom-4 z-40 w-full max-w-sm">
+              <div className={`rounded-[1rem] border px-4 py-3 text-sm font-semibold shadow-[0_18px_48px_rgba(19,56,78,0.18)] ${feedback.tone === 'success' ? 'border-[var(--teal-border)] bg-[var(--teal-soft)] text-[var(--teal-strong)]' : 'border-[var(--red-border)] bg-[var(--red-soft)] text-[var(--red-text)]'}`} role="status">
+                {feedback.message}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </main>
+
+      <ArchivedPatientDetailsModal archive={archive} onClose={() => setSelectedArchivedPatient(null)} patient={selectedArchivedPatient} />
+
+      <StaffEditorModal
+        form={staffForm}
+        errors={staffFormErrors}
+        isBusy={busyAction === 'create' || busyAction === 'update'}
+        mode={staffModalMode}
+        onChange={updateStaffForm}
+        onAddSpecialty={addSpecialty}
+        onClose={() => {
+          if (busyAction) return
+          setStaffModalMode(null)
+          setEditingUsername(null)
+          setStaffForm(createEmptyStaffForm())
+          setStaffFormErrors({})
+        }}
+        onRemoveSpecialty={removeSpecialty}
+        onSubmit={handleStaffSubmit}
+        open={staffModalMode !== null}
+        specialtyOptions={specialtyOptions}
+      />
+
+      <DeleteStaffModal
+        isBusy={busyAction === 'delete'}
+        onClose={() => {
+          if (busyAction === 'delete') return
+          setDeleteTarget(null)
+        }}
+        onConfirm={() => void handleDeleteStaff()}
+        target={deleteTarget}
+      />
+    </>
   )
 }

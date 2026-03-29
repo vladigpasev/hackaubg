@@ -206,7 +206,7 @@ export class PatientController {
     return this.patientService.getAllPatients();
   }
 
-  @Roles('registry')
+  @Roles('registry', 'admin')
   @Get('archive-now')
   @ApiOperation({
     summary: 'Run archival now',
@@ -236,7 +236,7 @@ export class PatientController {
     return { archived: true };
   }
 
-  @Roles('registry', 'nurse', 'doctor')
+  @Roles('registry', 'nurse', 'doctor', 'admin')
   @Get('archive/:dateTime')
   @ApiOperation({
     summary: 'Read archived records by date-time',

@@ -8,6 +8,7 @@ interface ModalProps extends PropsWithChildren {
   contextLabel?: string
   onClose: () => void
   footer?: ReactNode
+  panelClassName?: string
 }
 
 function getFocusableElements(container: HTMLElement) {
@@ -23,12 +24,18 @@ export function Modal({
   footer,
   onClose,
   open,
+  panelClassName,
   title,
 }: ModalProps) {
   const titleId = useId()
   const descriptionId = useId()
   const dialogRef = useRef<HTMLElement | null>(null)
   const lastFocusedElementRef = useRef<HTMLElement | null>(null)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     if (!open) {
@@ -47,7 +54,7 @@ export function Modal({
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        onCloseRef.current()
         return
       }
 
@@ -92,7 +99,7 @@ export function Modal({
         lastFocusedElementRef.current.focus()
       }
     }
-  }, [onClose, open])
+  }, [open])
 
   if (!open) {
     return null
@@ -100,7 +107,7 @@ export function Modal({
 
   function handleBackdropClick(event: MouseEvent<HTMLDivElement>) {
     if (event.target === event.currentTarget) {
-      onClose()
+      onCloseRef.current()
     }
   }
 
@@ -114,7 +121,7 @@ export function Modal({
         aria-describedby={description ? descriptionId : undefined}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-[2rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_32px_90px_rgba(16,46,63,0.2)] sm:p-6"
+        className={`max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-[2rem] border border-[var(--border-soft)] bg-white p-5 shadow-[0_32px_90px_rgba(16,46,63,0.2)] sm:p-6 ${panelClassName ?? ''}`}
         ref={dialogRef}
         role="dialog"
         tabIndex={-1}
