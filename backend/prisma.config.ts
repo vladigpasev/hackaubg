@@ -9,6 +9,10 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"] ?? "file:./hospital.db",
+    url:
+      process.env["DATABASE_URL"] ??
+      (process.env["RAILWAY_VOLUME_MOUNT_PATH"]
+        ? `file:${process.env["RAILWAY_VOLUME_MOUNT_PATH"].replace(/\/+$/, "")}/hospital.db`
+        : "file:./hospital.db"),
   },
 });

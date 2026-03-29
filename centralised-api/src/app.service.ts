@@ -17,11 +17,12 @@ export type InstanceRecord = {
 @Injectable()
 export class AppService {
   async orderAdequateHospitals(lat: number, lng: number) {
-    const hospitalPort = process.env.HOSPITAL_NODE_PORT ?? '';
+    const hospitalPort = process.env.HOSPITAL_NODE_PORT?.trim();
     const records = this.getAllRecordsInArea(lat, lng, 20);
     const recordsWithAttachedLoad = await Promise.all(
       records.map(async (record) => {
-        const url = `${record.ip}:${hospitalPort}/decentralized/current-load`;
+        const hospitalBaseUrl = this.buildHospitalBaseUrl(record.ip, hospitalPort);
+        const url = `${hospitalBaseUrl}/decentralized/current-load`;
         let resp: Response | undefined = undefined;
         try {
           resp = await this.fetchWithTimeout(
@@ -56,7 +57,7 @@ export class AppService {
     }
   }
   private readonly csvHeader = 'ip,lat,lng';
-  private readonly csvFilePath = join(process.cwd(), 'data', 'instances.csv');
+  private readonly csvFilePath = join(this.getDataDirectory(), 'instances.csv');
 
   constructor() {
     this.ensureCsvDataStore();
@@ -69,6 +70,39 @@ export class AppService {
 
   getHello(): string {
     return 'Hello World!';
+  }
+
+  private getDataDirectory(): string {
+    const configuredPath = process.env.INSTANCE_STORE_DIR?.trim();
+
+    if (configuredPath) {
+      return configuredPath;
+    }
+
+    const volumeMountPath = process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
+
+    if (volumeMountPath) {
+      return volumeMountPath;
+    }
+
+    return join(process.cwd(), 'data');
+  }
+
+  private buildHospitalBaseUrl(address: string, hospitalPort?: string): string {
+    const trimmedAddress = address.trim().replace(/\/+$/, '');
+
+    if (/^https?:\/\//i.test(trimmedAddress)) {
+      const parsed = new URL(trimmedAddress);
+
+      if (!parsed.port && hospitalPort) {
+        parsed.port = hospitalPort;
+      }
+
+      return parsed.toString().replace(/\/+$/, '');
+    }
+
+    const portSuffix = hospitalPort ? `:${hospitalPort}` : '';
+    return `http://${trimmedAddress}${portSuffix}`;
   }
 
   createRecord(record: InstanceRecord): void {
@@ -163,7 +197,7 @@ export class AppService {
   }
 
   private ensureCsvDataStore(): void {
-    const dataDirectory = join(process.cwd(), 'data');
+    const dataDirectory = this.getDataDirectory();
 
     if (!existsSync(dataDirectory)) {
       mkdirSync(dataDirectory, { recursive: true });

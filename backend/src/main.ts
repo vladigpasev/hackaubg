@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
+import type { INestApplication } from '@nestjs/common';
 import 'dotenv/config';
 import { AppModule } from './app.module';
 import {
@@ -8,6 +9,45 @@ import {
   getFrontendOrigins,
   getRequiredEnv,
 } from './auth/auth.constants';
+import { PatientService } from './patient/patient.service';
+import { PrismaService } from './service/prisma.service';
+import { RedisService } from './service/redis.service';
+import { HospitalSeedRunner } from '../prisma/seed/hospital.seed';
+
+async function maybeSeedDemoData(app: INestApplication) {
+  if (process.env.SEED_ON_BOOT?.trim() !== 'true') {
+    return;
+  }
+
+  console.log('Seeding hospital demo data...');
+
+  const prisma = app.get(PrismaService);
+  const patientService = app.get(PatientService);
+  const redisService = app.get(RedisService);
+  const runner = new HospitalSeedRunner(prisma, patientService, redisService);
+  const summary = await runner.run();
+
+  console.log(
+    `Seeded ${summary.users.length} staff accounts and ${summary.patients.length} patient scenarios.`,
+  );
+}
+
+function getHospitalBaseUrl() {
+  const configuredBaseUrl = process.env.HOSPITAL_BASE_URL?.trim();
+
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/+$/, '');
+  }
+
+  const privateDomain = process.env.RAILWAY_PRIVATE_DOMAIN?.trim();
+  const port = process.env.PORT?.trim();
+
+  if (privateDomain && port) {
+    return `http://${privateDomain}:${port}`;
+  }
+
+  return undefined;
+}
 
 async function bootstrap() {
   if (process.env.HOSPITAL_LAT == undefined)
@@ -45,11 +85,24 @@ async function bootstrap() {
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, documentFactory);
 
+  await maybeSeedDemoData(app);
+  await app.listen(process.env.PORT ?? 3000, '::');
+
   try {
     console.log('Attempting to connect to centralised server...');
-    const resp = await fetch(
-      `${process.env.CENTRALISED_API_URL}/add-instance?lat=${process.env.HOSPITAL_LAT}&lng=${process.env.HOSPITAL_LNG}`,
+    const url = new URL(
+      `${process.env.CENTRALISED_API_URL}/add-instance`,
     );
+    url.searchParams.set('lat', process.env.HOSPITAL_LAT);
+    url.searchParams.set('lng', process.env.HOSPITAL_LNG);
+
+    const hospitalBaseUrl = getHospitalBaseUrl();
+
+    if (hospitalBaseUrl) {
+      url.searchParams.set('baseUrl', hospitalBaseUrl);
+    }
+
+    const resp = await fetch(url);
     if (!resp.ok) {
       console.error('WARNING: Failed to connect to centralised server');
     }
@@ -57,7 +110,5 @@ async function bootstrap() {
   } catch (error) {
     console.error('WARNING: Failed to connect to centralised server');
   }
-
-  await app.listen(process.env.PORT ?? 3000);
 }
 void bootstrap();

@@ -18,7 +18,19 @@ export function getRequiredEnv(name: string): string {
 }
 
 export function getDatabaseUrl() {
-  return process.env.DATABASE_URL?.trim() || 'file:./hospital.db';
+  const configuredUrl = process.env.DATABASE_URL?.trim();
+
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+
+  const volumeMountPath = process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
+
+  if (volumeMountPath) {
+    return `file:${volumeMountPath.replace(/\/+$/, '')}/hospital.db`;
+  }
+
+  return 'file:./hospital.db';
 }
 
 export function getFrontendOrigins() {

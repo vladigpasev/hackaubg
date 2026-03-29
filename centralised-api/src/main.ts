@@ -3,9 +3,6 @@ import 'dotenv/config';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  if (process.env.HOSPITAL_NODE_PORT == undefined)
-    throw new Error('Environment variable "HOSPITAL_NODE_PORT" is not defined');
-
   const app = await NestFactory.create(AppModule);
   app.enableCors();
 
@@ -17,6 +14,6 @@ async function bootstrap() {
     next();
   });
 
-  await app.listen(process.env.PORT ?? 3001);
+  await app.listen(process.env.PORT ?? 3001, '::');
 }
 void bootstrap();
