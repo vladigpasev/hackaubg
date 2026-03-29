@@ -57,6 +57,14 @@ function parseStoredLabItem(value: unknown): StoredLabItem | null {
       typeof value.takenByActorId === 'string' ? value.takenByActorId : null,
     takenByLabel:
       typeof value.takenByLabel === 'string' ? value.takenByLabel : null,
+    resultsReadyByActorId:
+      typeof value.resultsReadyByActorId === 'string'
+        ? value.resultsReadyByActorId
+        : null,
+    resultsReadyByLabel:
+      typeof value.resultsReadyByLabel === 'string'
+        ? value.resultsReadyByLabel
+        : null,
     queueOrder: value.queueOrder,
   };
 }

@@ -307,6 +307,10 @@ export async function startDoctorVisitOnServer(visitId: string) {
   return postWorkflowAction(`/workflow/doctor-visits/${visitId}/start`)
 }
 
+export async function acceptNextDoctorVisitOnServer() {
+  return postWorkflowAction('/workflow/doctor-visits/accept-next')
+}
+
 export async function markDoctorVisitNotHereOnServer(visitId: string) {
   return postWorkflowAction(`/workflow/doctor-visits/${visitId}/not-here`)
 }
@@ -317,6 +321,10 @@ export async function completeDoctorVisitOnServer(visitId: string) {
 
 export async function startLabItemOnServer(itemId: string) {
   return postWorkflowAction(`/workflow/lab-items/${itemId}/start`)
+}
+
+export async function acceptNextLabItemOnServer() {
+  return postWorkflowAction('/workflow/lab-items/accept-next')
 }
 
 export async function markLabItemNotHereOnServer(itemId: string) {

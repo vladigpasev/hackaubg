@@ -169,11 +169,22 @@ export function PatientAgendaTimeline({ doctors, patient }: PatientAgendaTimelin
                   </div>
                   <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{item.testName}</p>
                   <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    {item.testerSpecialty} · {getDoctorLabelById(doctors, item.assignedDoctorId)}
+                    {item.testerSpecialty} ·{' '}
+                    {item.status === 'taken'
+                      ? item.takenByLabel ?? 'Collected'
+                      : item.status === 'results_ready'
+                        ? item.resultsReadyByLabel ?? 'Results ready'
+                        : getDoctorLabelById(doctors, item.assignedDoctorId)}
                   </p>
+                  {item.takenAt ? (
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">
+                      Taken at {formatTime(item.takenAt)}
+                    </p>
+                  ) : null}
                   {item.resultsReadyAt ? (
                     <p className="mt-1 text-xs text-[var(--text-muted)]">
                       Results ready at {formatTime(item.resultsReadyAt)}
+                      {item.resultsReadyByLabel ? ` by ${item.resultsReadyByLabel}` : ''}
                     </p>
                   ) : null}
                 </div>

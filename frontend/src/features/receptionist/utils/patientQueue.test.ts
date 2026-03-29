@@ -5,6 +5,7 @@ import {
   canCheckoutPatient,
   getPatientBoardCode,
   getPatientNextDestinationLabel,
+  getPendingResultItems,
   getStaffQueueItems,
 } from './patientQueue'
 
@@ -200,7 +201,7 @@ describe('patient agenda helpers', () => {
         isReturnVisit: true,
         note: 'Return visit after lab results.',
         queueOrder: 2,
-        requestedByLabel: 'Lab results',
+        requestedByLabel: 'Dr. Petrova',
         sourceVisitId: 'VISIT-1',
         specialty: 'Cardiology',
         status: 'queued',
@@ -208,7 +209,7 @@ describe('patient agenda helpers', () => {
       },
     ])
 
-    expect(getPatientNextDestinationLabel(patient)).toBe('Cardiology')
+    expect(getPatientNextDestinationLabel(patient)).toBe('Return to Dr. Petrova')
     expect(getPatientBoardCode(patient)).toBe('YELLOW')
   })
 
@@ -292,7 +293,7 @@ describe('patient agenda helpers', () => {
     expect(canCheckoutPatient(patientClosed)).toBe(true)
   })
 
-  it('keeps taken tests in the tester queue until their results are marked ready', () => {
+  it('moves taken tests out of the shared queue and into the pending results worklist', () => {
     const patient = buildPatient([
       {
         createdAt: '2026-03-28T08:16:00.000Z',
@@ -342,15 +343,44 @@ describe('patient agenda helpers', () => {
       },
     ])
 
-    expect(getStaffQueueItems([patient], 'LAB-1', true)).toEqual([
+    expect(getStaffQueueItems([patient], ['Laboratory Medicine'], true)).toEqual([])
+    expect(getPendingResultItems([patient])).toEqual([
       expect.objectContaining({
         batchId: 'BATCH-1',
         itemId: 'LAB-ITEM-1',
-        itemKind: 'lab_item',
         patientId: 'PAT-1',
-        status: 'queued',
-        title: 'Blood Test results',
+        testName: 'Blood Test',
       }),
     ])
+  })
+
+  it('shows a return visit only to the doctor who ordered the tests', () => {
+    const patient = buildPatient([
+      {
+        assignedDoctorId: 'DOC-1',
+        blockedByBatchId: null,
+        code: 'YELLOW',
+        completedAt: null,
+        createdAt: '2026-03-28T08:30:00.000Z',
+        entryType: 'doctor_visit',
+        id: 'VISIT-RETURN',
+        isReturnVisit: true,
+        note: 'Return visit after lab results.',
+        queueOrder: 1,
+        requestedByLabel: 'Dr. Petrova',
+        sourceVisitId: 'VISIT-1',
+        specialty: 'Cardiology',
+        status: 'queued',
+        updatedAt: '2026-03-28T08:30:00.000Z',
+      },
+    ])
+
+    expect(getStaffQueueItems([patient], ['Cardiology'], false, 'DOC-1')).toEqual([
+      expect.objectContaining({
+        itemId: 'VISIT-RETURN',
+        title: 'Return to Dr. Petrova',
+      }),
+    ])
+    expect(getStaffQueueItems([patient], ['Cardiology'], false, 'DOC-2')).toEqual([])
   })
 })

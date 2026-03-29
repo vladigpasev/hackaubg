@@ -16,6 +16,7 @@ import {
   buildServerNotes,
   getDoctorVisits,
   getLabBatches,
+  isVisitBlocked,
   projectPatientDetailsFromAgenda,
   toPatientDoctorVisit,
   toPatientLabBatch,
@@ -123,6 +124,9 @@ const LAB_TEST_CATALOG: CatalogOption[] = [
     testerSpecialty: 'Radiology',
   },
 ];
+
+const WORKSPACE_QUEUE_LOCK_KEY = 'workspace:queue:lock';
+const WORKSPACE_QUEUE_LOCK_TTL_MS = 5_000;
 
 function timestamp(value: string): number {
   return new Date(value).getTime();
@@ -319,205 +323,186 @@ export class WorkspaceService {
     patientId: string,
     payload: AddAssignmentsPayloadI,
   ): Promise<HospitalMutationResult> {
-    const normalizedPatientId = patientId.trim();
-    const state = await this.loadSnapshotState();
-    const patientState = this.findPatientStateOrThrow(
-      state,
-      normalizedPatientId,
-    );
-    const beforePatient = this.buildPatientSnapshot(
-      state.doctors,
-      patientState,
-    );
-    const actorLabel = this.getActorLabel(activeUser, state.doctors);
-    const now = new Date().toISOString();
-    const doctorDrafts = payload.assignments.filter(
-      (draft) => draft.destinationKind === 'doctor',
-    );
-    const labDrafts = payload.assignments.filter(
-      (draft) => draft.destinationKind === 'lab',
-    );
-
-    if (
-      labDrafts.length > 0 &&
-      (activeUser.role !== 'doctor' || activeUser.isTester)
-    ) {
-      throw new ConflictException(
-        'Only non-tester doctors can assign lab items.',
+    return this.withQueueMutationLock(async () => {
+      const normalizedPatientId = patientId.trim();
+      const state = await this.loadSnapshotState();
+      const patientState = this.findPatientStateOrThrow(
+        state,
+        normalizedPatientId,
       );
-    }
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      const actorLabel = this.getActorLabel(activeUser, state.doctors);
+      const now = new Date().toISOString();
+      const doctorDrafts = payload.assignments.filter(
+        (draft) => draft.destinationKind === 'doctor',
+      );
+      const labDrafts = payload.assignments.filter(
+        (draft) => draft.destinationKind === 'lab',
+      );
 
-    const sourceVisit = this.resolveSourceVisit(
-      patientState,
-      payload.sourceVisitId ?? null,
-      activeUser,
-    );
-
-    if (labDrafts.length > 0) {
       if (
-        !sourceVisit ||
-        sourceVisit.assignedDoctorUsername !== activeUser.username
+        labDrafts.length > 0 &&
+        (activeUser.role !== 'doctor' || activeUser.isTester)
       ) {
         throw new ConflictException(
-          'Select one of your own doctor visits before ordering lab work.',
+          'Only non-tester doctors can assign lab items.',
         );
       }
 
-      sourceVisit.completedAt = now;
-      sourceVisit.status = 'done';
-      sourceVisit.updatedAt = now;
-    }
+      const sourceVisit = this.resolveSourceVisit(
+        patientState,
+        payload.sourceVisitId ?? null,
+        activeUser,
+      );
 
-    const blockingBatchId =
-      labDrafts.length > 0 ? this.buildLabBatchId() : null;
+      if (labDrafts.length > 0) {
+        if (
+          !sourceVisit ||
+          sourceVisit.assignedDoctorUsername !== activeUser.username ||
+          sourceVisit.status !== 'with_staff'
+        ) {
+          throw new ConflictException(
+            'Select one of your own active doctor visits before ordering lab work.',
+          );
+        }
 
-    if (labDrafts.length > 0 && sourceVisit) {
-      const items = labDrafts.map((draft) => {
-        const catalogItem = this.getCatalogTestOrThrow(draft.label);
-        const assignedDoctorUsername = this.chooseBestDoctorUsername(
-          state,
-          catalogItem.testerSpecialty,
-          true,
-          null,
-        );
+        sourceVisit.completedAt = now;
+        sourceVisit.status = 'done';
+        sourceVisit.updatedAt = now;
+      }
 
-        this.maybeCreateDoctorQueueNotification(
-          patientState.notifications,
-          state,
-          patientState,
-          assignedDoctorUsername,
-          catalogItem.label,
-          now,
-          'lab',
-        );
+      const blockingBatchId =
+        labDrafts.length > 0 ? this.buildLabBatchId() : null;
 
-        return {
-          id: this.buildLabItemId(),
-          testName: catalogItem.label,
-          testerSpecialty: catalogItem.testerSpecialty,
-          assignedDoctorUsername,
-          code: draft.code,
-          status: 'queued',
+      if (labDrafts.length > 0 && sourceVisit) {
+        const items = labDrafts.map((draft) => {
+          const catalogItem = this.getCatalogTestOrThrow(draft.label);
+
+          return {
+            id: this.buildLabItemId(),
+            testName: catalogItem.label,
+            testerSpecialty: catalogItem.testerSpecialty,
+            assignedDoctorUsername: null,
+            code: draft.code,
+            status: 'queued',
+            createdAt: now,
+            updatedAt: now,
+            takenAt: null,
+            resultsReadyAt: null,
+            takenByActorId: null,
+            takenByLabel: null,
+            resultsReadyByActorId: null,
+            resultsReadyByLabel: null,
+            queueOrder: 0,
+          } satisfies StoredLabItem;
+        });
+
+        patientState.agenda.push({
+          id: blockingBatchId!,
+          entryType: 'lab_batch',
+          status: 'collecting',
+          orderedByActorId: activeUser.username,
+          orderedByLabel: actorLabel,
+          returnDoctorUsername: sourceVisit.assignedDoctorUsername,
+          returnSpecialty: sourceVisit.specialty,
+          returnCode: sourceVisit.code,
+          note: payload.note.trim(),
           createdAt: now,
           updatedAt: now,
-          takenAt: null,
           resultsReadyAt: null,
-          takenByActorId: null,
-          takenByLabel: null,
+          returnCreatedAt: null,
+          sourceVisitId: sourceVisit.id,
+          items,
+        } satisfies StoredLabBatch);
+      }
+
+      for (const draft of doctorDrafts) {
+        patientState.agenda.push({
+          id: this.buildDoctorVisitId(),
+          entryType: 'doctor_visit',
+          specialty: draft.label.trim(),
+          requestedByActorId: activeUser.username,
+          requestedByLabel: actorLabel,
+          assignedDoctorUsername: null,
+          code: draft.code,
+          status: 'queued',
+          note: '',
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null,
+          sourceVisitId: sourceVisit?.id ?? null,
+          blockedByBatchId: blockingBatchId,
+          isReturnVisit: false,
           queueOrder: 0,
-        } satisfies StoredLabItem;
-      });
+        } satisfies StoredDoctorVisit);
+      }
 
-      patientState.agenda.push({
-        id: blockingBatchId!,
-        entryType: 'lab_batch',
-        status: 'collecting',
-        orderedByActorId: activeUser.username,
-        orderedByLabel: actorLabel,
-        returnDoctorUsername: sourceVisit.assignedDoctorUsername,
-        returnSpecialty: sourceVisit.specialty,
-        returnCode: sourceVisit.code,
-        note: payload.note.trim(),
-        createdAt: now,
-        updatedAt: now,
-        resultsReadyAt: null,
-        returnCreatedAt: null,
-        sourceVisitId: sourceVisit.id,
-        items,
-      } satisfies StoredLabBatch);
-    }
-
-    for (const draft of doctorDrafts) {
-      const assignedDoctorUsername = this.chooseBestDoctorUsername(
-        state,
-        draft.label,
-        false,
-        null,
-      );
-
-      this.maybeCreateDoctorQueueNotification(
-        patientState.notifications,
-        state,
+      this.reconcileAssignments(state);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
         patientState,
-        assignedDoctorUsername,
-        draft.label.trim(),
-        now,
-        'doctor',
       );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(normalizedPatientId);
+      return this.buildMutationResult(activeUser, normalizedPatientId);
+    });
+  }
 
-      patientState.agenda.push({
-        id: this.buildDoctorVisitId(),
-        entryType: 'doctor_visit',
-        specialty: draft.label.trim(),
-        requestedByActorId: activeUser.username,
-        requestedByLabel: actorLabel,
-        assignedDoctorUsername,
-        code: draft.code,
-        status: 'queued',
-        note: '',
-        createdAt: now,
-        updatedAt: now,
-        completedAt: null,
-        sourceVisitId: sourceVisit?.id ?? null,
-        blockedByBatchId: blockingBatchId,
-        isReturnVisit: false,
-        queueOrder: 0,
-      } satisfies StoredDoctorVisit);
+  async acceptNextDoctorVisit(
+    activeUser: AuthUser,
+  ): Promise<HospitalMutationResult> {
+    if (activeUser.role !== 'doctor' || activeUser.isTester) {
+      throw new ConflictException(
+        'Only non-tester doctors can accept the next patient.',
+      );
     }
 
-    this.reconcileAssignments(state);
-    const afterPatient = this.buildPatientSnapshot(state.doctors, patientState);
-    this.maybeCreateGuidanceNotification(
-      patientState.notifications,
-      beforePatient,
-      afterPatient,
-      now,
-    );
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(normalizedPatientId);
-    return this.buildMutationResult(activeUser, normalizedPatientId);
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+
+      if (this.findCurrentDoctorVisit(state, activeUser.username)) {
+        throw new ConflictException(
+          'Finish or release your current patient before accepting the next one.',
+        );
+      }
+
+      const candidate = this.findNextDoctorVisitCandidate(state, activeUser);
+
+      if (!candidate) {
+        throw new NotFoundException(
+          'No patient is waiting in your shared specialty queue.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      candidate.visit.status = 'with_staff';
+      candidate.visit.assignedDoctorUsername = activeUser.username;
+      candidate.visit.updatedAt = now;
+      this.reconcileAssignments(state);
+      await this.persistPatientState(candidate.patientState);
+      this.pushWorkspaceRefreshEvent(candidate.patientState.core.id);
+      return this.buildMutationResult(activeUser, candidate.patientState.core.id);
+    });
   }
 
   async startDoctorVisit(
     activeUser: AuthUser,
     visitId: string,
   ): Promise<HospitalMutationResult> {
-    if (activeUser.role !== 'doctor' || activeUser.isTester) {
-      throw new ConflictException(
-        'Only non-tester doctors can start doctor visits.',
-      );
-    }
-
-    const state = await this.loadSnapshotState();
-    const { patientState, visit } = this.findVisitByIdOrThrow(state, visitId);
-    const now = new Date().toISOString();
-
-    if (visit.assignedDoctorUsername !== activeUser.username) {
-      throw new ConflictException(
-        'This visit is not assigned to the current doctor.',
-      );
-    }
-
-    for (const candidateState of state.patients) {
-      for (const candidateVisit of getDoctorVisits(candidateState.agenda)) {
-        if (
-          candidateVisit.assignedDoctorUsername === activeUser.username &&
-          candidateVisit.id !== visit.id &&
-          candidateVisit.status === 'with_staff'
-        ) {
-          candidateVisit.status = 'queued';
-          candidateVisit.updatedAt = now;
-          await this.persistPatientState(candidateState);
-        }
-      }
-    }
-
-    visit.status = 'with_staff';
-    visit.updatedAt = now;
-    this.rebalanceDoctorQueueForUsername(state.patients, activeUser.username);
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+    void activeUser;
+    void visitId;
+    throw new ConflictException(
+      'Manual patient selection is no longer supported. Accept the next patient instead.',
+    );
   }
 
   async markDoctorVisitNotHere(
@@ -530,24 +515,44 @@ export class WorkspaceService {
       );
     }
 
-    const state = await this.loadSnapshotState();
-    const { patientState, visit } = this.findVisitByIdOrThrow(state, visitId);
-
-    if (
-      visit.assignedDoctorUsername !== activeUser.username ||
-      visit.status === 'done'
-    ) {
-      throw new ConflictException(
-        'Only active doctor visits can be marked as not here.',
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+      const { patientState, visit } = this.findVisitByIdOrThrow(state, visitId);
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
       );
-    }
 
-    visit.status = 'not_here';
-    visit.updatedAt = new Date().toISOString();
-    this.rebalanceDoctorQueueForUsername(state.patients, activeUser.username);
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+      if (
+        visit.assignedDoctorUsername !== activeUser.username ||
+        visit.status !== 'with_staff'
+      ) {
+        throw new ConflictException(
+          'Only your current patient can be marked as not here.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      visit.status = 'not_here';
+      visit.assignedDoctorUsername = visit.isReturnVisit
+        ? activeUser.username
+        : null;
+      visit.updatedAt = now;
+      this.reconcileAssignments(state);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(patientState.core.id);
+      return this.buildMutationResult(activeUser, patientState.core.id);
+    });
   }
 
   async completeDoctorVisit(
@@ -560,78 +565,87 @@ export class WorkspaceService {
       );
     }
 
-    const state = await this.loadSnapshotState();
-    const { patientState, visit } = this.findVisitByIdOrThrow(state, visitId);
-    const beforePatient = this.buildPatientSnapshot(
-      state.doctors,
-      patientState,
-    );
-
-    if (visit.assignedDoctorUsername !== activeUser.username) {
-      throw new ConflictException(
-        'This visit is not assigned to the current doctor.',
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+      const { patientState, visit } = this.findVisitByIdOrThrow(state, visitId);
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
       );
-    }
 
-    const now = new Date().toISOString();
-    visit.completedAt = now;
-    visit.status = 'done';
-    visit.updatedAt = now;
-    this.rebalanceDoctorQueueForUsername(state.patients, activeUser.username);
-    const afterPatient = this.buildPatientSnapshot(state.doctors, patientState);
-    this.maybeCreateGuidanceNotification(
-      patientState.notifications,
-      beforePatient,
-      afterPatient,
-      now,
-    );
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+      if (
+        visit.assignedDoctorUsername !== activeUser.username ||
+        visit.status !== 'with_staff'
+      ) {
+        throw new ConflictException(
+          'Only your current patient can be completed.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      visit.completedAt = now;
+      visit.status = 'done';
+      visit.updatedAt = now;
+      this.reconcileAssignments(state);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(patientState.core.id);
+      return this.buildMutationResult(activeUser, patientState.core.id);
+    });
+  }
+
+  async acceptNextLabItem(
+    activeUser: AuthUser,
+  ): Promise<HospitalMutationResult> {
+    this.assertTester(activeUser);
+
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+
+      if (this.findCurrentLabItem(state, activeUser.username)) {
+        throw new ConflictException(
+          'Finish or release your current patient before accepting the next one.',
+        );
+      }
+
+      const candidate = this.findNextLabItemCandidate(state, activeUser);
+
+      if (!candidate) {
+        throw new NotFoundException(
+          'No patient is waiting in your shared specialty queue.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      candidate.item.status = 'with_staff';
+      candidate.item.assignedDoctorUsername = activeUser.username;
+      candidate.item.updatedAt = now;
+      candidate.batch.updatedAt = now;
+      this.reconcileAssignments(state);
+      await this.persistPatientState(candidate.patientState);
+      this.pushWorkspaceRefreshEvent(candidate.patientState.core.id);
+      return this.buildMutationResult(activeUser, candidate.patientState.core.id);
+    });
   }
 
   async startLabItem(
     activeUser: AuthUser,
     itemId: string,
   ): Promise<HospitalMutationResult> {
-    this.assertTester(activeUser);
-    const state = await this.loadSnapshotState();
-    const { patientState, batch, item } = this.findLabItemByIdOrThrow(
-      state,
-      itemId,
+    void activeUser;
+    void itemId;
+    throw new ConflictException(
+      'Manual patient selection is no longer supported. Accept the next patient instead.',
     );
-    const now = new Date().toISOString();
-
-    if (item.assignedDoctorUsername !== activeUser.username) {
-      throw new ConflictException(
-        'This lab item is not assigned to the current tester.',
-      );
-    }
-
-    for (const candidateState of state.patients) {
-      for (const candidateBatch of getLabBatches(candidateState.agenda)) {
-        for (const candidateItem of candidateBatch.items) {
-          if (
-            candidateItem.assignedDoctorUsername === activeUser.username &&
-            candidateItem.id !== item.id &&
-            candidateItem.status === 'with_staff'
-          ) {
-            candidateItem.status = 'queued';
-            candidateItem.updatedAt = now;
-            candidateBatch.updatedAt = now;
-            await this.persistPatientState(candidateState);
-          }
-        }
-      }
-    }
-
-    item.status = 'with_staff';
-    item.updatedAt = now;
-    batch.updatedAt = now;
-    this.rebalanceLabQueueForUsername(state.patients, activeUser.username);
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
   }
 
   async markLabItemNotHere(
@@ -639,31 +653,47 @@ export class WorkspaceService {
     itemId: string,
   ): Promise<HospitalMutationResult> {
     this.assertTester(activeUser);
-    const state = await this.loadSnapshotState();
-    const { patientState, batch, item } = this.findLabItemByIdOrThrow(
-      state,
-      itemId,
-    );
-
-    if (
-      item.assignedDoctorUsername !== activeUser.username ||
-      item.status === 'taken' ||
-      item.status === 'results_ready'
-    ) {
-      throw new ConflictException(
-        'Only active lab items can be marked as not here.',
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+      const { patientState, batch, item } = this.findLabItemByIdOrThrow(
+        state,
+        itemId,
       );
-    }
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
 
-    const now = new Date().toISOString();
-    item.status = 'not_here';
-    item.updatedAt = now;
-    batch.updatedAt = now;
-    this.syncLabBatchStatus(batch);
-    this.rebalanceLabQueueForUsername(state.patients, activeUser.username);
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+      if (
+        item.assignedDoctorUsername !== activeUser.username ||
+        item.status !== 'with_staff'
+      ) {
+        throw new ConflictException(
+          'Only your current lab patient can be marked as not here.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      item.status = 'not_here';
+      item.assignedDoctorUsername = null;
+      item.updatedAt = now;
+      batch.updatedAt = now;
+      this.syncLabBatchStatus(batch);
+      this.reconcileAssignments(state);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(patientState.core.id);
+      return this.buildMutationResult(activeUser, patientState.core.id);
+    });
   }
 
   async markLabItemTaken(
@@ -671,160 +701,164 @@ export class WorkspaceService {
     itemId: string,
   ): Promise<HospitalMutationResult> {
     this.assertTester(activeUser);
-    const state = await this.loadSnapshotState();
-    const { patientState, batch, item } = this.findLabItemByIdOrThrow(
-      state,
-      itemId,
-    );
-    const beforePatient = this.buildPatientSnapshot(
-      state.doctors,
-      patientState,
-    );
-
-    if (item.assignedDoctorUsername !== activeUser.username) {
-      throw new ConflictException(
-        'This lab item is not assigned to the current tester.',
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+      const { patientState, batch, item } = this.findLabItemByIdOrThrow(
+        state,
+        itemId,
       );
-    }
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
 
-    if (item.status === 'taken' || item.status === 'results_ready') {
+      if (
+        item.assignedDoctorUsername !== activeUser.username ||
+        item.status !== 'with_staff'
+      ) {
+        throw new ConflictException(
+          'Only your current lab patient can be marked as taken.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      item.status = 'taken';
+      item.takenAt = now;
+      item.takenByActorId = activeUser.username;
+      item.takenByLabel = this.getActorLabel(activeUser, state.doctors);
+      item.assignedDoctorUsername = null;
+      item.updatedAt = now;
+      item.queueOrder = 0;
+      batch.updatedAt = now;
+      this.syncLabBatchStatus(batch);
+
+      this.reconcileAssignments(state);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(patientState.core.id);
       return this.buildMutationResult(activeUser, patientState.core.id);
-    }
-
-    const now = new Date().toISOString();
-    item.status = 'taken';
-    item.takenAt = now;
-    item.takenByActorId = activeUser.username;
-    item.takenByLabel = this.getActorLabel(activeUser, state.doctors);
-    item.updatedAt = now;
-    batch.updatedAt = now;
-    this.syncLabBatchStatus(batch);
-
-    this.rebalanceLabQueueForUsername(state.patients, activeUser.username);
-    const afterPatient = this.buildPatientSnapshot(state.doctors, patientState);
-    this.maybeCreateGuidanceNotification(
-      patientState.notifications,
-      beforePatient,
-      afterPatient,
-      now,
-    );
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+    });
   }
 
   async markLabItemResultsReady(
     activeUser: AuthUser,
     itemId: string,
   ): Promise<HospitalMutationResult> {
-    this.assertTester(activeUser);
-    const state = await this.loadSnapshotState();
-    const { patientState, batch, item } = this.findLabItemByIdOrThrow(
-      state,
-      itemId,
-    );
-    const beforePatient = this.buildPatientSnapshot(
-      state.doctors,
-      patientState,
-    );
-
-    if (item.assignedDoctorUsername !== activeUser.username) {
-      throw new ConflictException(
-        'This lab item is not assigned to the current tester.',
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+      const { patientState, batch, item } = this.findLabItemByIdOrThrow(
+        state,
+        itemId,
       );
-    }
-
-    if (item.status === 'results_ready') {
-      return this.buildMutationResult(activeUser, patientState.core.id);
-    }
-
-    if (item.status !== 'taken') {
-      throw new ConflictException(
-        'Only taken lab items can be marked as results ready.',
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
       );
-    }
 
-    const now = new Date().toISOString();
-    item.status = 'results_ready';
-    item.resultsReadyAt = now;
-    item.updatedAt = now;
-    batch.updatedAt = now;
-    this.syncLabBatchStatus(batch);
+      if (item.status === 'results_ready') {
+        return this.buildMutationResult(activeUser, patientState.core.id);
+      }
 
-    if (
-      batch.items.every((candidate) => candidate.status === 'results_ready')
-    ) {
-      this.finalizeLabBatchReturn(state, patientState, batch, activeUser, now);
+      if (item.status !== 'taken') {
+        throw new ConflictException(
+          'Only taken lab items can be marked as results ready.',
+        );
+      }
+
+      const now = new Date().toISOString();
+      item.status = 'results_ready';
+      item.resultsReadyAt = now;
+      item.resultsReadyByActorId = activeUser.username;
+      item.resultsReadyByLabel = this.getActorLabel(activeUser, state.doctors);
+      item.updatedAt = now;
+      batch.updatedAt = now;
+      this.syncLabBatchStatus(batch);
+
+      if (
+        batch.items.every((candidate) => candidate.status === 'results_ready')
+      ) {
+        this.finalizeLabBatchReturn(state, patientState, batch, activeUser, now);
+      }
+
       this.reconcileAssignments(state);
-    }
-
-    const afterPatient = this.buildPatientSnapshot(state.doctors, patientState);
-    this.maybeCreateGuidanceNotification(
-      patientState.notifications,
-      beforePatient,
-      afterPatient,
-      now,
-    );
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(patientState.core.id);
+      return this.buildMutationResult(activeUser, patientState.core.id);
+    });
   }
 
   async markLabResultsReady(
     activeUser: AuthUser,
     batchId: string,
   ): Promise<HospitalMutationResult> {
-    this.assertTester(activeUser);
-    const state = await this.loadSnapshotState();
-    const { patientState, batch } = this.findLabBatchByIdOrThrow(
-      state,
-      batchId,
-    );
-    const beforePatient = this.buildPatientSnapshot(
-      state.doctors,
-      patientState,
-    );
-
-    if (
-      !batch.items.some(
-        (item) => item.assignedDoctorUsername === activeUser.username,
-      )
-    ) {
-      throw new ConflictException(
-        'This lab batch is not assigned to the current tester.',
+    return this.withQueueMutationLock(async () => {
+      const state = await this.loadSnapshotState();
+      const { patientState, batch } = this.findLabBatchByIdOrThrow(
+        state,
+        batchId,
       );
-    }
-
-    if (batch.status !== 'waiting_results') {
-      throw new ConflictException(
-        'All lab items must be taken before results can be released.',
+      const beforePatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
       );
-    }
 
-    const now = new Date().toISOString();
-    for (const item of batch.items) {
-      if (item.status === 'taken') {
-        item.status = 'results_ready';
-        item.resultsReadyAt = now;
-        item.updatedAt = now;
+      if (batch.status !== 'waiting_results') {
+        throw new ConflictException(
+          'All lab items must be taken before results can be released.',
+        );
       }
-    }
 
-    this.syncLabBatchStatus(batch);
-    this.finalizeLabBatchReturn(state, patientState, batch, activeUser, now);
-    batch.updatedAt = now;
+      const now = new Date().toISOString();
+      const actorLabel = this.getActorLabel(activeUser, state.doctors);
 
-    this.reconcileAssignments(state);
-    const afterPatient = this.buildPatientSnapshot(state.doctors, patientState);
-    this.maybeCreateGuidanceNotification(
-      patientState.notifications,
-      beforePatient,
-      afterPatient,
-      now,
-    );
-    await this.persistPatientState(patientState);
-    this.pushWorkspaceRefreshEvent(patientState.core.id);
-    return this.buildMutationResult(activeUser, patientState.core.id);
+      for (const item of batch.items) {
+        if (item.status === 'taken') {
+          item.status = 'results_ready';
+          item.resultsReadyAt = now;
+          item.resultsReadyByActorId = activeUser.username;
+          item.resultsReadyByLabel = actorLabel;
+          item.updatedAt = now;
+        }
+      }
+
+      this.syncLabBatchStatus(batch);
+      this.finalizeLabBatchReturn(state, patientState, batch, activeUser, now);
+      batch.updatedAt = now;
+
+      this.reconcileAssignments(state);
+      const afterPatient = this.buildPatientSnapshot(
+        state.doctors,
+        patientState,
+      );
+      this.maybeCreateGuidanceNotification(
+        patientState.notifications,
+        beforePatient,
+        afterPatient,
+        now,
+      );
+      await this.persistPatientState(patientState);
+      this.pushWorkspaceRefreshEvent(patientState.core.id);
+      return this.buildMutationResult(activeUser, patientState.core.id);
+    });
   }
 
   private async buildMutationResult(
@@ -870,7 +904,7 @@ export class WorkspaceService {
       offlineDoctorKeys.map((key) => key.slice('doctor:offline:'.length)),
     );
     const patients: ActivePatientState[] = [];
-    let shouldPersistAssignments = false;
+    let shouldPersistState = false;
 
     for (const coreRecord of cores) {
       const core = this.toWorkspacePatientCore(coreRecord);
@@ -887,10 +921,18 @@ export class WorkspaceService {
         }
       }
 
-      const notifications = await readStoredPatientNotifications(
+      const rawNotifications = await readStoredPatientNotifications(
         client,
         core.id,
       );
+      const notifications = rawNotifications.filter(
+        (notification) => notification.type !== 'doctor_queue',
+      );
+
+      if (notifications.length !== rawNotifications.length) {
+        shouldPersistState = true;
+      }
+
       patients.push({
         core,
         detail,
@@ -905,9 +947,9 @@ export class WorkspaceService {
       patients,
     };
 
-    shouldPersistAssignments = this.reconcileAssignments(state);
+    shouldPersistState = this.reconcileAssignments(state) || shouldPersistState;
 
-    if (shouldPersistAssignments) {
+    if (shouldPersistState) {
       for (const patientState of state.patients) {
         await this.persistPatientState(patientState);
       }
@@ -922,11 +964,22 @@ export class WorkspaceService {
         ...doctor,
         specialties: [...doctor.specialties],
       })),
-      notifications: state.patients.flatMap((patientState) =>
-        patientState.notifications.map((notification) =>
-          this.toWorkspaceNotification(state.doctors, notification),
-        ),
-      ),
+      notifications: state.patients
+        .flatMap((patientState) =>
+          patientState.notifications.map((notification) =>
+            this.toWorkspaceNotification(state.doctors, notification),
+          ),
+        )
+        .sort((left, right) => {
+          const createdAtDelta =
+            timestamp(right.createdAt) - timestamp(left.createdAt);
+
+          if (createdAtDelta !== 0) {
+            return createdAtDelta;
+          }
+
+          return right.id.localeCompare(left.id);
+        }),
       patients: state.patients.map((patientState) =>
         this.buildPatientSnapshot(state.doctors, patientState),
       ),
@@ -1164,6 +1217,8 @@ export class WorkspaceService {
               resultsReadyAt: null,
               takenByActorId: null,
               takenByLabel: null,
+              resultsReadyByActorId: null,
+              resultsReadyByLabel: null,
               queueOrder: 0,
             },
           ],
@@ -1221,32 +1276,8 @@ export class WorkspaceService {
     batch.status = 'collecting';
   }
 
-  private resolveReturnDoctorUsername(
-    state: SnapshotState,
-    batch: StoredLabBatch,
-  ): string | null {
-    const orderingDoctorUsername = batch.returnDoctorUsername;
-
-    if (
-      orderingDoctorUsername &&
-      state.doctors.some(
-        (doctor) =>
-          doctor.username === orderingDoctorUsername && !doctor.isTester,
-      )
-    ) {
-      return orderingDoctorUsername;
-    }
-
-    return this.chooseBestDoctorUsername(
-      state,
-      batch.returnSpecialty,
-      false,
-      null,
-    );
-  }
-
   private finalizeLabBatchReturn(
-    state: SnapshotState,
+    _state: SnapshotState,
     patientState: ActivePatientState,
     batch: StoredLabBatch,
     activeUser: AuthUser,
@@ -1260,10 +1291,6 @@ export class WorkspaceService {
       return;
     }
 
-    const assignedDoctorUsername = this.resolveReturnDoctorUsername(
-      state,
-      batch,
-    );
     const existingReturnVisit = getDoctorVisits(patientState.agenda).find(
       (visit) =>
         visit.isReturnVisit &&
@@ -1272,23 +1299,13 @@ export class WorkspaceService {
     );
 
     if (!existingReturnVisit) {
-      this.maybeCreateDoctorQueueNotification(
-        patientState.notifications,
-        state,
-        patientState,
-        assignedDoctorUsername,
-        batch.returnSpecialty,
-        now,
-        'doctor',
-      );
-
       patientState.agenda.push({
         id: this.buildDoctorVisitId(),
         entryType: 'doctor_visit',
         specialty: batch.returnSpecialty,
-        requestedByActorId: activeUser.username,
-        requestedByLabel: 'Lab results',
-        assignedDoctorUsername,
+        requestedByActorId: batch.returnDoctorUsername ?? activeUser.username,
+        requestedByLabel: batch.orderedByLabel,
+        assignedDoctorUsername: batch.returnDoctorUsername,
         code: batch.returnCode,
         status: 'queued',
         note: 'Return visit after lab results.',
@@ -1300,29 +1317,60 @@ export class WorkspaceService {
         isReturnVisit: true,
         queueOrder: 0,
       } satisfies StoredDoctorVisit);
-    } else if (
-      existingReturnVisit.assignedDoctorUsername !== assignedDoctorUsername
-    ) {
-      existingReturnVisit.assignedDoctorUsername = assignedDoctorUsername;
+    } else {
+      existingReturnVisit.requestedByActorId =
+        batch.returnDoctorUsername ?? activeUser.username;
+      existingReturnVisit.requestedByLabel = batch.orderedByLabel;
+      existingReturnVisit.assignedDoctorUsername = batch.returnDoctorUsername;
+      existingReturnVisit.status = 'queued';
       existingReturnVisit.updatedAt = now;
     }
 
     batch.resultsReadyAt = now;
     batch.returnCreatedAt = now;
-    batch.returnDoctorUsername = assignedDoctorUsername;
     batch.status = 'return_created';
   }
 
   private reconcileAssignments(state: SnapshotState): boolean {
     let changed = false;
 
+    changed = this.normalizeCurrentDoctorAssignments(state) || changed;
+    changed = this.normalizeCurrentLabAssignments(state) || changed;
+
     for (const patientState of state.patients) {
       for (const visit of getDoctorVisits(patientState.agenda)) {
         if (visit.status === 'done') {
+          if (visit.queueOrder !== 0) {
+            visit.queueOrder = 0;
+            changed = true;
+          }
           continue;
         }
 
-        const isAssignedDoctorValid =
+        if (visit.status === 'with_staff') {
+          const isAssignedDoctorValid =
+            visit.assignedDoctorUsername &&
+            state.doctors.some(
+              (doctor) =>
+                doctor.username === visit.assignedDoctorUsername &&
+                !doctor.isTester,
+            );
+
+          if (!isAssignedDoctorValid) {
+            visit.status = 'queued';
+            visit.assignedDoctorUsername = null;
+            changed = true;
+          }
+
+          if (visit.queueOrder !== 0) {
+            visit.queueOrder = 0;
+            changed = true;
+          }
+          continue;
+        }
+
+        const isReservedReturnDoctorValid =
+          visit.isReturnVisit &&
           visit.assignedDoctorUsername &&
           state.doctors.some(
             (doctor) =>
@@ -1330,19 +1378,8 @@ export class WorkspaceService {
               !doctor.isTester,
           );
 
-        if (isAssignedDoctorValid) {
-          continue;
-        }
-
-        const nextDoctorUsername = this.chooseBestDoctorUsername(
-          state,
-          visit.specialty,
-          false,
-          visit.id,
-        );
-
-        if (visit.assignedDoctorUsername !== nextDoctorUsername) {
-          visit.assignedDoctorUsername = nextDoctorUsername;
+        if (!isReservedReturnDoctorValid && visit.assignedDoctorUsername !== null) {
+          visit.assignedDoctorUsername = null;
           changed = true;
         }
       }
@@ -1350,268 +1387,375 @@ export class WorkspaceService {
       for (const batch of getLabBatches(patientState.agenda)) {
         for (const item of batch.items) {
           if (item.status === 'taken' || item.status === 'results_ready') {
+            if (item.assignedDoctorUsername !== null) {
+              item.assignedDoctorUsername = null;
+              changed = true;
+            }
+
+            if (item.queueOrder !== 0) {
+              item.queueOrder = 0;
+              changed = true;
+            }
             continue;
           }
 
-          const isAssignedDoctorValid =
-            item.assignedDoctorUsername &&
-            state.doctors.some(
-              (doctor) =>
-                doctor.username === item.assignedDoctorUsername &&
-                doctor.isTester,
-            );
+          if (item.status === 'with_staff') {
+            const isAssignedDoctorValid =
+              item.assignedDoctorUsername &&
+              state.doctors.some(
+                (doctor) =>
+                  doctor.username === item.assignedDoctorUsername &&
+                  doctor.isTester,
+              );
 
-          if (isAssignedDoctorValid) {
+            if (!isAssignedDoctorValid) {
+              item.status = 'queued';
+              item.assignedDoctorUsername = null;
+              changed = true;
+            }
+
+            if (item.queueOrder !== 0) {
+              item.queueOrder = 0;
+              changed = true;
+            }
             continue;
           }
 
-          const nextTesterUsername = this.chooseBestDoctorUsername(
-            state,
-            item.testerSpecialty,
-            true,
-            item.id,
-          );
-
-          if (item.assignedDoctorUsername !== nextTesterUsername) {
-            item.assignedDoctorUsername = nextTesterUsername;
+          if (item.assignedDoctorUsername !== null) {
+            item.assignedDoctorUsername = null;
             changed = true;
           }
         }
       }
     }
 
-    for (const doctor of state.doctors) {
-      if (doctor.isTester) {
-        changed =
-          this.rebalanceLabQueueForUsername(state.patients, doctor.username) ||
-          changed;
-      } else {
-        changed =
-          this.rebalanceDoctorQueueForUsername(
-            state.patients,
-            doctor.username,
-          ) || changed;
+    changed = this.reindexDoctorQueueOrder(state) || changed;
+    changed = this.reindexLabQueueOrder(state) || changed;
+
+    return changed;
+  }
+
+  private normalizeCurrentDoctorAssignments(state: SnapshotState): boolean {
+    const visitsByDoctor = new Map<string, StoredDoctorVisit[]>();
+
+    for (const patientState of state.patients) {
+      for (const visit of getDoctorVisits(patientState.agenda)) {
+        if (
+          visit.status !== 'with_staff' ||
+          !visit.assignedDoctorUsername ||
+          !state.doctors.some(
+            (doctor) =>
+              doctor.username === visit.assignedDoctorUsername &&
+              !doctor.isTester,
+          )
+        ) {
+          continue;
+        }
+
+        const current = visitsByDoctor.get(visit.assignedDoctorUsername) ?? [];
+        current.push(visit);
+        visitsByDoctor.set(visit.assignedDoctorUsername, current);
+      }
+    }
+
+    let changed = false;
+
+    for (const visits of visitsByDoctor.values()) {
+      const [keptVisit, ...duplicateVisits] = [...visits].sort(
+        (left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt),
+      );
+      void keptVisit;
+
+      for (const visit of duplicateVisits) {
+        visit.status = 'queued';
+        visit.assignedDoctorUsername = null;
+        changed = true;
       }
     }
 
     return changed;
   }
 
-  private chooseBestDoctorUsername(
-    state: SnapshotState,
-    specialty: string,
-    isTester: boolean,
-    excludedEntryId: string | null,
-  ): string | null {
-    const matchingDoctors = state.doctors.filter((doctor) => {
-      if (doctor.isTester !== isTester) {
-        return false;
+  private normalizeCurrentLabAssignments(state: SnapshotState): boolean {
+    const itemsByTester = new Map<string, StoredLabItem[]>();
+
+    for (const patientState of state.patients) {
+      for (const batch of getLabBatches(patientState.agenda)) {
+        for (const item of batch.items) {
+          if (
+            item.status !== 'with_staff' ||
+            !item.assignedDoctorUsername ||
+            !state.doctors.some(
+              (doctor) =>
+                doctor.username === item.assignedDoctorUsername &&
+                doctor.isTester,
+            )
+          ) {
+            continue;
+          }
+
+          const current = itemsByTester.get(item.assignedDoctorUsername) ?? [];
+          current.push(item);
+          itemsByTester.set(item.assignedDoctorUsername, current);
+        }
       }
-
-      if (state.offlineDoctorUsernames.has(doctor.username)) {
-        return false;
-      }
-
-      return doctor.specialties.some(
-        (candidate) =>
-          normalizeSpecialty(candidate) === normalizeSpecialty(specialty),
-      );
-    });
-
-    if (matchingDoctors.length === 0) {
-      return null;
     }
 
-    return [...matchingDoctors].sort((left, right) => {
-      const leftLoad = isTester
-        ? this.getLabItemLoadExcludingEntry(
-            state.patients,
-            left.username,
-            excludedEntryId,
-          )
-        : this.getDoctorVisitLoadExcludingEntry(
-            state.patients,
-            left.username,
-            excludedEntryId,
-          );
-      const rightLoad = isTester
-        ? this.getLabItemLoadExcludingEntry(
-            state.patients,
-            right.username,
-            excludedEntryId,
-          )
-        : this.getDoctorVisitLoadExcludingEntry(
-            state.patients,
-            right.username,
-            excludedEntryId,
-          );
+    let changed = false;
 
-      if (leftLoad !== rightLoad) {
-        return leftLoad - rightLoad;
-      }
-
-      return left.displayName.localeCompare(right.displayName);
-    })[0].username;
-  }
-
-  private getDoctorVisitLoadExcludingEntry(
-    patients: ActivePatientState[],
-    username: string,
-    excludedVisitId: string | null,
-  ): number {
-    return patients.reduce((count, patientState) => {
-      return (
-        count +
-        getDoctorVisits(patientState.agenda).filter(
-          (visit) =>
-            visit.assignedDoctorUsername === username &&
-            visit.status !== 'done' &&
-            visit.id !== excludedVisitId,
-        ).length
+    for (const items of itemsByTester.values()) {
+      const [keptItem, ...duplicateItems] = [...items].sort(
+        (left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt),
       );
-    }, 0);
+      void keptItem;
+
+      for (const item of duplicateItems) {
+        item.status = 'queued';
+        item.assignedDoctorUsername = null;
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
-  private getLabItemLoadExcludingEntry(
-    patients: ActivePatientState[],
+  private reindexDoctorQueueOrder(state: SnapshotState): boolean {
+    const visitsBySpecialty = new Map<string, StoredDoctorVisit[]>();
+    let changed = false;
+
+    for (const patientState of state.patients) {
+      for (const visit of getDoctorVisits(patientState.agenda)) {
+        const isActionable =
+          visit.status !== 'done' &&
+          visit.status !== 'with_staff' &&
+          !isVisitBlocked(patientState.agenda, visit);
+
+        if (!isActionable) {
+          if (visit.queueOrder !== 0) {
+            visit.queueOrder = 0;
+            changed = true;
+          }
+          continue;
+        }
+
+        const key = normalizeSpecialty(visit.specialty);
+        const current = visitsBySpecialty.get(key) ?? [];
+        current.push(visit);
+        visitsBySpecialty.set(key, current);
+      }
+    }
+
+    for (const visits of visitsBySpecialty.values()) {
+      [...visits]
+        .sort((left, right) =>
+          compareByCodeAndTime(
+            left.code,
+            left.status,
+            left.createdAt,
+            left.id,
+            right.code,
+            right.status,
+            right.createdAt,
+            right.id,
+          ),
+        )
+        .forEach((visit, index) => {
+          if (visit.queueOrder !== index + 1) {
+            visit.queueOrder = index + 1;
+            changed = true;
+          }
+        });
+    }
+
+    return changed;
+  }
+
+  private reindexLabQueueOrder(state: SnapshotState): boolean {
+    const itemsBySpecialty = new Map<string, StoredLabItem[]>();
+    let changed = false;
+
+    for (const patientState of state.patients) {
+      for (const batch of getLabBatches(patientState.agenda)) {
+        for (const item of batch.items) {
+          const isActionable =
+            batch.status === 'collecting' &&
+            item.status !== 'with_staff' &&
+            item.status !== 'taken' &&
+            item.status !== 'results_ready';
+
+          if (!isActionable) {
+            if (item.queueOrder !== 0) {
+              item.queueOrder = 0;
+              changed = true;
+            }
+            continue;
+          }
+
+          const key = normalizeSpecialty(item.testerSpecialty);
+          const current = itemsBySpecialty.get(key) ?? [];
+          current.push(item);
+          itemsBySpecialty.set(key, current);
+        }
+      }
+    }
+
+    for (const items of itemsBySpecialty.values()) {
+      [...items]
+        .sort((left, right) =>
+          compareByCodeAndTime(
+            left.code,
+            left.status,
+            left.createdAt,
+            left.id,
+            right.code,
+            right.status,
+            right.createdAt,
+            right.id,
+          ),
+        )
+        .forEach((item, index) => {
+          if (item.queueOrder !== index + 1) {
+            item.queueOrder = index + 1;
+            changed = true;
+          }
+        });
+    }
+
+    return changed;
+  }
+
+  private findCurrentDoctorVisit(
+    state: SnapshotState,
     username: string,
-    excludedItemId: string | null,
-  ): number {
-    return patients.reduce((count, patientState) => {
-      return (
-        count +
-        getLabBatches(patientState.agenda).reduce(
-          (batchCount, batch) =>
-            batchCount +
-            batch.items.filter(
+  ): StoredDoctorVisit | null {
+    for (const patientState of state.patients) {
+      const visit = getDoctorVisits(patientState.agenda).find(
+        (candidate) =>
+          candidate.status === 'with_staff' &&
+          candidate.assignedDoctorUsername === username,
+      );
+
+      if (visit) {
+        return visit;
+      }
+    }
+
+    return null;
+  }
+
+  private findCurrentLabItem(
+    state: SnapshotState,
+    username: string,
+  ): StoredLabItem | null {
+    for (const patientState of state.patients) {
+      for (const batch of getLabBatches(patientState.agenda)) {
+        const item = batch.items.find(
+          (candidate) =>
+            candidate.status === 'with_staff' &&
+            candidate.assignedDoctorUsername === username,
+        );
+
+        if (item) {
+          return item;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private findNextDoctorVisitCandidate(
+    state: SnapshotState,
+    activeUser: AuthUser,
+  ): { patientState: ActivePatientState; visit: StoredDoctorVisit } | null {
+    if (state.offlineDoctorUsernames.has(activeUser.username)) {
+      throw new ConflictException(
+        'Mark yourself online before accepting the next patient.',
+      );
+    }
+
+    const matches = state.patients.flatMap((patientState) =>
+      getDoctorVisits(patientState.agenda)
+        .filter(
+          (visit) =>
+            visit.status !== 'with_staff' &&
+            visit.status !== 'done' &&
+            (!visit.assignedDoctorUsername ||
+              visit.assignedDoctorUsername === activeUser.username) &&
+            !isVisitBlocked(patientState.agenda, visit) &&
+            activeUser.specialties.some(
+              (specialty) =>
+                normalizeSpecialty(specialty) ===
+                normalizeSpecialty(visit.specialty),
+            ),
+        )
+        .map((visit) => ({ patientState, visit })),
+    );
+
+    return (
+      matches.sort((left, right) =>
+        compareByCodeAndTime(
+          left.visit.code,
+          left.visit.status,
+          left.visit.createdAt,
+          left.visit.id,
+          right.visit.code,
+          right.visit.status,
+          right.visit.createdAt,
+          right.visit.id,
+        ),
+      )[0] ?? null
+    );
+  }
+
+  private findNextLabItemCandidate(
+    state: SnapshotState,
+    activeUser: AuthUser,
+  ): {
+    patientState: ActivePatientState;
+    batch: StoredLabBatch;
+    item: StoredLabItem;
+  } | null {
+    if (state.offlineDoctorUsernames.has(activeUser.username)) {
+      throw new ConflictException(
+        'Mark yourself online before accepting the next patient.',
+      );
+    }
+
+    const matches = state.patients.flatMap((patientState) =>
+      getLabBatches(patientState.agenda)
+        .filter((batch) => batch.status === 'collecting')
+        .flatMap((batch) =>
+          batch.items
+            .filter(
               (item) =>
-                item.assignedDoctorUsername === username &&
+                item.status !== 'with_staff' &&
                 item.status !== 'taken' &&
                 item.status !== 'results_ready' &&
-                item.id !== excludedItemId,
-            ).length,
-          0,
-        )
-      );
-    }, 0);
-  }
-
-  private rebalanceDoctorQueueForUsername(
-    patients: ActivePatientState[],
-    username: string,
-  ): boolean {
-    const visits = patients.flatMap((patientState) =>
-      getDoctorVisits(patientState.agenda).filter(
-        (visit) =>
-          visit.assignedDoctorUsername === username && visit.status !== 'done',
-      ),
+                activeUser.specialties.some(
+                  (specialty) =>
+                    normalizeSpecialty(specialty) ===
+                    normalizeSpecialty(item.testerSpecialty),
+                ),
+            )
+            .map((item) => ({ patientState, batch, item })),
+        ),
     );
-    let changed = false;
-    const currentVisit =
-      [...visits]
-        .filter((visit) => visit.status === 'with_staff')
-        .sort(
-          (left, right) =>
-            timestamp(right.updatedAt) - timestamp(left.updatedAt),
-        )[0] ?? null;
 
-    for (const visit of visits.filter(
-      (candidate) => candidate.id !== currentVisit?.id,
-    )) {
-      if (visit.status === 'with_staff') {
-        visit.status = 'queued';
-        changed = true;
-      }
-    }
-
-    if (currentVisit && currentVisit.queueOrder !== 0) {
-      currentVisit.queueOrder = 0;
-      changed = true;
-    }
-
-    visits
-      .filter((candidate) => candidate.id !== currentVisit?.id)
-      .sort((left, right) =>
+    return (
+      matches.sort((left, right) =>
         compareByCodeAndTime(
-          left.code,
-          left.status,
-          left.createdAt,
-          left.id,
-          right.code,
-          right.status,
-          right.createdAt,
-          right.id,
+          left.item.code,
+          left.item.status,
+          left.item.createdAt,
+          left.item.id,
+          right.item.code,
+          right.item.status,
+          right.item.createdAt,
+          right.item.id,
         ),
-      )
-      .forEach((visit, index) => {
-        if (visit.queueOrder !== index + 1) {
-          visit.queueOrder = index + 1;
-          changed = true;
-        }
-      });
-
-    return changed;
-  }
-
-  private rebalanceLabQueueForUsername(
-    patients: ActivePatientState[],
-    username: string,
-  ): boolean {
-    const items = patients.flatMap((patientState) =>
-      getLabBatches(patientState.agenda).flatMap((batch) =>
-        batch.items.filter(
-          (item) =>
-            item.assignedDoctorUsername === username &&
-            item.status !== 'taken' &&
-            item.status !== 'results_ready',
-        ),
-      ),
+      )[0] ?? null
     );
-    let changed = false;
-    const currentItem =
-      [...items]
-        .filter((item) => item.status === 'with_staff')
-        .sort(
-          (left, right) =>
-            timestamp(right.updatedAt) - timestamp(left.updatedAt),
-        )[0] ?? null;
-
-    for (const item of items.filter(
-      (candidate) => candidate.id !== currentItem?.id,
-    )) {
-      if (item.status === 'with_staff') {
-        item.status = 'queued';
-        changed = true;
-      }
-    }
-
-    if (currentItem && currentItem.queueOrder !== 0) {
-      currentItem.queueOrder = 0;
-      changed = true;
-    }
-
-    items
-      .filter((candidate) => candidate.id !== currentItem?.id)
-      .sort((left, right) =>
-        compareByCodeAndTime(
-          left.code,
-          left.status,
-          left.createdAt,
-          left.id,
-          right.code,
-          right.status,
-          right.createdAt,
-          right.id,
-        ),
-      )
-      .forEach((item, index) => {
-        if (item.queueOrder !== index + 1) {
-          item.queueOrder = index + 1;
-          changed = true;
-        }
-      });
-
-    return changed;
   }
 
   private getActorLabel(
@@ -1664,53 +1808,6 @@ export class WorkspaceService {
     );
   }
 
-  private maybeCreateDoctorQueueNotification(
-    notifications: StoredPatientNotification[],
-    state: SnapshotState,
-    patientState: ActivePatientState,
-    doctorUsername: string | null,
-    title: string,
-    now: string,
-    kind: 'doctor' | 'lab',
-  ): void {
-    if (!doctorUsername) {
-      return;
-    }
-
-    const currentLoad =
-      kind === 'lab'
-        ? this.getLabItemLoadExcludingEntry(
-            state.patients,
-            doctorUsername,
-            null,
-          )
-        : this.getDoctorVisitLoadExcludingEntry(
-            state.patients,
-            doctorUsername,
-            null,
-          );
-
-    if (currentLoad !== 0) {
-      return;
-    }
-
-    notifications.unshift({
-      id: this.buildNotificationId(),
-      targetRole: 'doctor',
-      targetDoctorUsername: doctorUsername,
-      type: 'doctor_queue',
-      title: kind === 'lab' ? 'New lab item' : 'New patient',
-      message:
-        kind === 'lab'
-          ? `${patientState.core.name} was added to your ${title} lab queue.`
-          : `${patientState.core.name} was added to your ${title} queue.`,
-      createdAt: now,
-      readAt: null,
-      patientId: patientState.core.id,
-      agendaEntryId: null,
-    });
-  }
-
   private buildGuidanceKey(patient: Patient | null): string | null {
     if (!patient) {
       return null;
@@ -1722,7 +1819,45 @@ export class WorkspaceService {
       return null;
     }
 
-    return `${next.id}:${next.title}:${next.code}`;
+    return `${next.id}:${next.title}:${next.code}:${next.status}`;
+  }
+
+  private buildGuidanceNotification(
+    patient: Patient,
+    candidate: AgendaCandidate,
+  ): Pick<StoredPatientNotification, 'message' | 'title'> {
+    if (candidate.status === 'not_here') {
+      return {
+        title: 'Patient not here',
+        message: `${patient.name} is not here for ${candidate.title}. Please locate them and bring them back.`,
+      };
+    }
+
+    if (candidate.status === 'with_staff') {
+      return {
+        title: 'Patient with staff',
+        message: `${patient.name} is currently with ${candidate.title}.`,
+      };
+    }
+
+    return {
+      title: 'Guide patient',
+      message: `${patient.name} should go next to ${candidate.title} with ${candidate.code.toLowerCase()} code.`,
+    };
+  }
+
+  private buildDoctorVisitQueueTitle(
+    visit: Pick<StoredDoctorVisit, 'isReturnVisit' | 'requestedByLabel' | 'specialty'>,
+  ): string {
+    if (!visit.isReturnVisit) {
+      return visit.specialty;
+    }
+
+    if (normalizeWorkspaceValue(visit.requestedByLabel) === 'lab results') {
+      return `Return to ${visit.specialty}`;
+    }
+
+    return `Return to ${visit.requestedByLabel}`;
   }
 
   private maybeCreateGuidanceNotification(
@@ -1739,13 +1874,18 @@ export class WorkspaceService {
       return;
     }
 
+    const notification = this.buildGuidanceNotification(
+      afterPatient,
+      afterCandidate,
+    );
+
     notifications.unshift({
       id: this.buildNotificationId(),
       targetRole: 'nurse',
       targetDoctorUsername: null,
       type: 'patient_guidance',
-      title: 'Guide patient',
-      message: `${afterPatient.name} should go next to ${afterCandidate.title} with ${afterCandidate.code.toLowerCase()} code.`,
+      title: notification.title,
+      message: notification.message,
       createdAt: now,
       readAt: null,
       patientId: afterPatient.id,
@@ -1776,7 +1916,7 @@ export class WorkspaceService {
       )
       .map((visit) => ({
         id: visit.id,
-        title: visit.specialty,
+        title: this.buildDoctorVisitQueueTitle(visit),
         code: visit.code,
         status:
           visit.status === 'with_staff'
@@ -1947,6 +2087,30 @@ export class WorkspaceService {
         patientState.notifications,
       ),
     ]);
+  }
+
+  private async withQueueMutationLock<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const token = randomUUID();
+    const result = await this.redisService.client.set(
+      WORKSPACE_QUEUE_LOCK_KEY,
+      token,
+      {
+        NX: true,
+        PX: WORKSPACE_QUEUE_LOCK_TTL_MS,
+      },
+    );
+
+    if (result !== 'OK') {
+      throw new ConflictException('The shared queue is busy. Please try again.');
+    }
+
+    try {
+      return await operation();
+    } finally {
+      await this.redisService.client.del(WORKSPACE_QUEUE_LOCK_KEY);
+    }
   }
 
   private buildNotificationId(): string {

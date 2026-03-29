@@ -78,6 +78,7 @@ export interface PatientLabItem {
   takenAt: string | null
   resultsReadyAt: string | null
   takenByLabel: string | null
+  resultsReadyByLabel?: string | null
   queueOrder: number
 }
 

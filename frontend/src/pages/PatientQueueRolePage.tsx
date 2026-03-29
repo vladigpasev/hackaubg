@@ -14,6 +14,8 @@ import {
   createPatient,
   getUnreadNotificationCount,
   getVisibleNotifications,
+  markLabItemResultsReady,
+  markLabResultsReady,
   markNotificationRead,
   prefetchPatientDetails,
   updatePatientCore,
@@ -33,10 +35,12 @@ import type {
 import {
   buildPatientOverviewSummary,
   canCheckoutPatient,
+  getLabBatches,
   getPatientAgendaPendingCount,
   getPatientBoardCode,
   getPatientDisplayStatus,
   getPatientNextDestinationLabel,
+  getPendingResultItemsForPatient,
   sortPatientsForOverview,
 } from '../features/receptionist/utils/patientQueue'
 
@@ -282,7 +286,7 @@ function RegisterPatientDialog({
             <CodeSelector onChange={setCode} value={code} />
           </div>
           <p className="text-sm leading-6 text-[var(--text-secondary)]">
-            The registry assigns the first doctor specialty and the patient is routed to the doctor with the smallest queue for that specialty.
+            The registry assigns the first doctor specialty and the patient enters the shared queue for that specialty.
           </p>
         </div>
       </div>
@@ -355,6 +359,8 @@ function PatientDetailsDialog({
   doctors,
   isSubmitting,
   onAddAssignments,
+  onMarkBatchResultsReady,
+  onMarkResultReady,
   onCheckout,
   onClose,
   onSaveCore,
@@ -366,6 +372,8 @@ function PatientDetailsDialog({
   doctors: HospitalSnapshot['doctors']
   isSubmitting: boolean
   onAddAssignments: (drafts: AssignmentDraft[]) => Promise<void>
+  onMarkBatchResultsReady: (batchId: string) => Promise<void>
+  onMarkResultReady: (batchId: string, itemId: string) => Promise<void>
   onCheckout: () => Promise<void>
   onClose: () => void
   onSaveCore: (values: UpdatePatientCoreInput) => Promise<void>
@@ -386,6 +394,13 @@ function PatientDetailsDialog({
   }
 
   const displayStatus = getPatientDisplayStatus(patient)
+  const pendingResultItems = getPendingResultItemsForPatient(patient)
+  const pendingResultBatches = getLabBatches(patient)
+    .map((batch) => ({
+      batch,
+      items: batch.items.filter((item) => item.status === 'taken'),
+    }))
+    .filter((group) => group.items.length > 0)
 
   function addDraft() {
     if (nextStepLabel.trim().length === 0) {
@@ -558,6 +573,72 @@ function PatientDetailsDialog({
             </div>
           </section>
         </div>
+
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Pending results</p>
+            <span className="text-xs text-[var(--text-muted)]">{pendingResultItems.length}</span>
+          </div>
+          {pendingResultBatches.length === 0 ? (
+            <div className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
+              No pending results.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingResultBatches.map(({ batch, items }) => (
+                <article
+                  key={batch.id}
+                  className="rounded-[1rem] border border-[var(--border-soft)] bg-[var(--surface-soft)] p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">
+                        Return target: {batch.returnSpecialty}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">
+                        {items.length} test{items.length === 1 ? '' : 's'} waiting for results
+                      </p>
+                    </div>
+                    {items.length > 1 ? (
+                      <button
+                        className="min-h-12 rounded-[1rem] border border-[var(--border-soft)] bg-white px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-secondary)] disabled:opacity-60"
+                        disabled={isSubmitting}
+                        onClick={() => void onMarkBatchResultsReady(batch.id)}
+                        type="button"
+                      >
+                        Mark batch ready
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {items.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-[0.95rem] border border-[var(--border-soft)] bg-white px-3 py-3"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-[var(--text-primary)]">{item.testName}</p>
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">
+                            {item.testerSpecialty}
+                            {item.takenAt ? ` · Taken ${formatCompactTime(item.takenAt)}` : ''}
+                          </p>
+                        </div>
+                        <button
+                          className="min-h-12 rounded-[1rem] border border-[var(--teal-strong)] bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--teal-strong)] disabled:opacity-60"
+                          disabled={isSubmitting}
+                          onClick={() => void onMarkResultReady(batch.id, item.id)}
+                          type="button"
+                        >
+                          Results ready
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -963,6 +1044,31 @@ export function PatientQueueRolePage({
               }, actor),
             (result) =>
               'patient' in result ? `Agenda updated for ${result.patient.name}.` : 'Agenda updated.',
+          )
+        }
+        onMarkBatchResultsReady={(batchId) =>
+          runMutation(
+            'batch-results-ready',
+            () => markLabResultsReady(rawPatients, doctors, notifications, selectedPatient!.id, batchId, actor),
+            (result) =>
+              'patient' in result ? `${result.patient.name} batch marked as results ready.` : 'Batch updated.',
+          )
+        }
+        onMarkResultReady={(batchId, itemId) =>
+          runMutation(
+            'result-ready',
+            () =>
+              markLabItemResultsReady(
+                rawPatients,
+                doctors,
+                notifications,
+                selectedPatient!.id,
+                batchId,
+                itemId,
+                actor,
+              ),
+            (result) =>
+              'patient' in result ? `${result.patient.name} result marked as ready.` : 'Result updated.',
           )
         }
         onCheckout={() =>

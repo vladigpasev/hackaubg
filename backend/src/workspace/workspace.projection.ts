@@ -136,7 +136,10 @@ export function projectPatientDetailsFromAgenda(
         referredById: batch.orderedByActorId ?? 'system',
         specialty: item.testName,
         triageState: codeToTriageState(item.code),
-        referredToId: item.assignedDoctorUsername ?? item.testerSpecialty,
+        referredToId:
+          item.takenByActorId ??
+          item.assignedDoctorUsername ??
+          item.testerSpecialty,
         isDone: batch.status === 'return_created',
         timestamp:
           batch.returnCreatedAt ??
@@ -213,6 +216,7 @@ export function toPatientLabBatch(
       takenAt: item.takenAt,
       resultsReadyAt: item.resultsReadyAt,
       takenByLabel: item.takenByLabel,
+      resultsReadyByLabel: item.resultsReadyByLabel,
       queueOrder: item.queueOrder,
     })),
   };

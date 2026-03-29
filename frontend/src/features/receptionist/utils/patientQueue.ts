@@ -28,9 +28,23 @@ export interface StaffQueueItem {
   patientAdmittedAt: string
   patientId: string
   patientName: string
+  queueOrder: number
   specialty: string
   status: 'queued' | 'with_staff' | 'not_here'
   title: string
+}
+
+export interface PendingResultItem {
+  batchId: string
+  itemId: string
+  patientAdmittedAt: string
+  patientId: string
+  patientName: string
+  specialty: string
+  takenAt: string
+  takenByLabel: string | null
+  testName: string
+  updatedAt: string
 }
 
 export type PatientDisplayStatus =
@@ -52,6 +66,37 @@ interface AgendaCandidate {
 
 function timestamp(value: string) {
   return new Date(value).getTime()
+}
+
+function normalizeQueueSpecialty(value: string) {
+  const normalized = value.trim().toLowerCase()
+
+  if (normalized === 'blood-test' || normalized === 'blood test' || normalized === 'lab') {
+    return 'laboratory medicine'
+  }
+
+  if (normalized === 'scanner' || normalized === 'imaging') {
+    return 'radiology'
+  }
+
+  return normalized
+}
+
+function matchesSpecialty(specialties: string[], specialty: string) {
+  const normalizedSpecialty = normalizeQueueSpecialty(specialty)
+  return specialties.some((candidate) => normalizeQueueSpecialty(candidate) === normalizedSpecialty)
+}
+
+function getDoctorVisitTitle(visit: Pick<PatientDoctorVisit, 'isReturnVisit' | 'requestedByLabel' | 'specialty'>) {
+  if (!visit.isReturnVisit) {
+    return visit.specialty
+  }
+
+  if (visit.requestedByLabel.trim().toLowerCase() === 'lab results') {
+    return `Return to ${visit.specialty}`
+  }
+
+  return `Return to ${visit.requestedByLabel}`
 }
 
 export function getCodePriority(code: AssignmentCode | PatientCode) {
@@ -129,6 +174,35 @@ export function getPendingLabItems(patient: Patient) {
   )
 }
 
+export function getPendingResultItemsForPatient(patient: Patient): PendingResultItem[] {
+  return getLabBatches(patient)
+    .flatMap((batch) =>
+      batch.items
+        .filter((item) => item.status === 'taken')
+        .map<PendingResultItem>((item) => ({
+          batchId: batch.id,
+          itemId: item.id,
+          patientAdmittedAt: patient.admittedAt,
+          patientId: patient.id,
+          patientName: patient.name,
+          specialty: item.testerSpecialty,
+          takenAt: item.takenAt ?? item.updatedAt,
+          takenByLabel: item.takenByLabel,
+          testName: item.testName,
+          updatedAt: item.updatedAt,
+        })),
+    )
+    .sort((left, right) => {
+      const takenDelta = timestamp(left.takenAt) - timestamp(right.takenAt)
+
+      if (takenDelta !== 0) {
+        return takenDelta
+      }
+
+      return left.itemId.localeCompare(right.itemId)
+    })
+}
+
 function compareCandidatePriority(left: AgendaCandidate, right: AgendaCandidate) {
   if (left.status === 'with_staff' || right.status === 'with_staff') {
     if (left.status === right.status) {
@@ -159,7 +233,7 @@ function getAgendaCandidates(patient: Patient): AgendaCandidate[] {
     createdAt: visit.createdAt,
     id: visit.id,
     status: visit.status === 'done' ? 'queued' : visit.status,
-    title: visit.specialty,
+    title: getDoctorVisitTitle(visit),
   }))
 
   const labCandidates = getCollectingLabBatches(patient).flatMap((batch) =>
@@ -297,45 +371,16 @@ export function getDoctorLabelById(doctors: DoctorProfile[], doctorId: string | 
   return doctors.find((doctor) => doctor.id === doctorId)?.displayName ?? 'Unassigned'
 }
 
-export function getDoctorQueueLoad(patients: Patient[], doctorId: string) {
-  return patients.reduce((count, patient) => {
-    if (patient.checkedOutAt) {
-      return count
-    }
-
-    return (
-      count +
-      getDoctorVisits(patient).filter(
-        (visit) => visit.assignedDoctorId === doctorId && visit.status !== 'done',
-      ).length
-    )
-  }, 0)
+export function getDoctorQueueLoad(patients: Patient[], specialties: string[], doctorId?: string | null) {
+  return getStaffQueueItems(patients, specialties, false, doctorId).length
 }
 
-function getLabQueueLoad(patients: Patient[], doctorId: string) {
-  return patients.reduce((count, patient) => {
-    if (patient.checkedOutAt) {
-      return count
-    }
-
-    return (
-      count +
-      getLabBatches(patient).reduce(
-        (batchCount, batch) =>
-          batchCount +
-          batch.items.filter(
-            (item) =>
-              item.assignedDoctorId === doctorId &&
-              item.status !== 'taken' &&
-              item.status !== 'results_ready',
-          ).length,
-        0,
-      )
-    )
-  }, 0)
-}
-
-export function getStaffQueueItems(patients: Patient[], doctorId: string, isTester: boolean) {
+export function getStaffQueueItems(
+  patients: Patient[],
+  specialties: string[],
+  isTester: boolean,
+  doctorId?: string | null,
+) {
   const items: StaffQueueItem[] = []
 
   for (const patient of patients) {
@@ -347,9 +392,10 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
       for (const batch of getCollectingLabBatches(patient)) {
         for (const item of batch.items) {
           if (
-            item.assignedDoctorId !== doctorId ||
+            item.status === 'with_staff' ||
             item.status === 'taken' ||
-            item.status === 'results_ready'
+            item.status === 'results_ready' ||
+            !matchesSpecialty(specialties, item.testerSpecialty)
           ) {
             continue
           }
@@ -364,32 +410,10 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
             patientAdmittedAt: patient.admittedAt,
             patientId: patient.id,
             patientName: patient.name,
+            queueOrder: item.queueOrder,
             specialty: item.testerSpecialty,
             status: item.status,
             title: item.testName,
-          })
-        }
-      }
-
-      for (const batch of getWaitingResultsBatches(patient)) {
-        for (const item of batch.items) {
-          if (item.assignedDoctorId !== doctorId || item.status !== 'taken') {
-            continue
-          }
-
-          items.push({
-            batchId: batch.id,
-            code: item.code,
-            createdAt: item.updatedAt,
-            id: `${patient.id}:${batch.id}:${item.id}:results`,
-            itemId: item.id,
-            itemKind: 'lab_item',
-            patientAdmittedAt: patient.admittedAt,
-            patientId: patient.id,
-            patientName: patient.name,
-            specialty: item.testerSpecialty,
-            status: 'queued',
-            title: `${item.testName} results`,
           })
         }
       }
@@ -398,7 +422,11 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
     }
 
     for (const visit of getPendingDoctorVisits(patient)) {
-      if (visit.assignedDoctorId !== doctorId) {
+      if (
+        visit.status === 'with_staff' ||
+        !matchesSpecialty(specialties, visit.specialty) ||
+        (visit.assignedDoctorId !== null && visit.assignedDoctorId !== doctorId)
+      ) {
         continue
       }
 
@@ -412,9 +440,10 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
         patientAdmittedAt: patient.admittedAt,
         patientId: patient.id,
         patientName: patient.name,
+        queueOrder: visit.queueOrder,
         specialty: visit.specialty,
-        status: visit.status === 'with_staff' ? 'with_staff' : visit.status === 'not_here' ? 'not_here' : 'queued',
-        title: visit.isReturnVisit ? `Return to ${visit.specialty}` : visit.specialty,
+        status: visit.status === 'not_here' ? 'not_here' : 'queued',
+        title: getDoctorVisitTitle(visit),
       })
     }
   }
@@ -439,8 +468,81 @@ export function getStaffQueueItems(patients: Patient[], doctorId: string, isTest
   )
 }
 
-export function getStaffCurrentItem(queueItems: StaffQueueItem[]) {
-  return queueItems.find((item) => item.status === 'with_staff') ?? null
+export function getStaffCurrentItem(patients: Patient[], doctorId: string, isTester: boolean) {
+  const items: StaffQueueItem[] = []
+
+  for (const patient of patients) {
+    if (patient.checkedOutAt) {
+      continue
+    }
+
+    if (isTester) {
+      for (const batch of getCollectingLabBatches(patient)) {
+        for (const item of batch.items) {
+          if (item.assignedDoctorId !== doctorId || item.status !== 'with_staff') {
+            continue
+          }
+
+          items.push({
+            batchId: batch.id,
+            code: item.code,
+            createdAt: item.createdAt,
+            id: `${patient.id}:${batch.id}:${item.id}`,
+            itemId: item.id,
+            itemKind: 'lab_item',
+            patientAdmittedAt: patient.admittedAt,
+            patientId: patient.id,
+            patientName: patient.name,
+            queueOrder: 0,
+            specialty: item.testerSpecialty,
+            status: 'with_staff',
+            title: item.testName,
+          })
+        }
+      }
+
+      continue
+    }
+
+    for (const visit of getPendingDoctorVisits(patient)) {
+      if (visit.assignedDoctorId !== doctorId || visit.status !== 'with_staff') {
+        continue
+      }
+
+      items.push({
+        batchId: null,
+        code: visit.code,
+        createdAt: visit.createdAt,
+        id: `${patient.id}:${visit.id}`,
+        itemId: visit.id,
+        itemKind: 'doctor_visit',
+        patientAdmittedAt: patient.admittedAt,
+        patientId: patient.id,
+        patientName: patient.name,
+        queueOrder: 0,
+        specialty: visit.specialty,
+        status: 'with_staff',
+        title: visit.isReturnVisit ? `Return to ${visit.specialty}` : visit.specialty,
+      })
+    }
+  }
+
+  return items.sort((left, right) => timestamp(right.createdAt) - timestamp(left.createdAt))[0] ?? null
+}
+
+export function getPendingResultItems(patients: Patient[]) {
+  return patients
+    .filter((patient) => !patient.checkedOutAt)
+    .flatMap((patient) => getPendingResultItemsForPatient(patient))
+    .sort((left, right) => {
+      const takenDelta = timestamp(left.takenAt) - timestamp(right.takenAt)
+
+      if (takenDelta !== 0) {
+        return takenDelta
+      }
+
+      return left.itemId.localeCompare(right.itemId)
+    })
 }
 
 export function getPatientAgendaPendingCount(patient: Patient) {
@@ -473,6 +575,6 @@ export function getLabBatchLeadCode(batch: PatientLabBatch): AssignmentCode {
     })[0]?.code ?? batch.returnCode
 }
 
-export function getLabQueueCount(patients: Patient[], doctorId: string) {
-  return getLabQueueLoad(patients, doctorId)
+export function getLabQueueCount(patients: Patient[], specialties: string[]) {
+  return getStaffQueueItems(patients, specialties, true).length
 }

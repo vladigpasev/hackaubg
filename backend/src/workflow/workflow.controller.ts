@@ -55,6 +55,11 @@ export class WorkflowController {
     return this.workspaceService.startDoctorVisit(request.user, visitId);
   }
 
+  @Post('doctor-visits/accept-next')
+  acceptNextDoctorVisit(@Req() request: AuthenticatedRequest) {
+    return this.workspaceService.acceptNextDoctorVisit(request.user);
+  }
+
   @Post('doctor-visits/:visitId/not-here')
   markDoctorVisitNotHere(
     @Req() request: AuthenticatedRequest,
@@ -77,6 +82,11 @@ export class WorkflowController {
     @Param('itemId') itemId: string,
   ) {
     return this.workspaceService.startLabItem(request.user, itemId);
+  }
+
+  @Post('lab-items/accept-next')
+  acceptNextLabItem(@Req() request: AuthenticatedRequest) {
+    return this.workspaceService.acceptNextLabItem(request.user);
   }
 
   @Post('lab-items/:itemId/not-here')

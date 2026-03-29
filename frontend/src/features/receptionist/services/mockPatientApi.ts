@@ -1,4 +1,6 @@
 export {
+  acceptNextDoctorVisit,
+  acceptNextLabItem,
   addAssignments,
   addPatientNote,
   buildSpecialtyCatalog,

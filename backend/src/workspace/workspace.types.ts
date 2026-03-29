@@ -85,6 +85,7 @@ export interface PatientLabItem {
   takenAt: string | null;
   resultsReadyAt: string | null;
   takenByLabel: string | null;
+  resultsReadyByLabel?: string | null;
   queueOrder: number;
 }
 
@@ -224,6 +225,8 @@ export interface StoredLabItem {
   resultsReadyAt: string | null;
   takenByActorId: string | null;
   takenByLabel: string | null;
+  resultsReadyByActorId?: string | null;
+  resultsReadyByLabel?: string | null;
   queueOrder: number;
 }
 

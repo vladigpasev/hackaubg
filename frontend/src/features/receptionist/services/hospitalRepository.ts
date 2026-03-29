@@ -1,5 +1,7 @@
 import type { AuthUser } from '../../../auth/types'
 import {
+  acceptNextDoctorVisitOnServer,
+  acceptNextLabItemOnServer,
   addAssignmentsOnServer,
   addPatientNoteOnServer,
   checkInPatient,
@@ -301,6 +303,16 @@ export async function startDoctorVisit(
   return startDoctorVisitOnServer(visitId)
 }
 
+export async function acceptNextDoctorVisit(
+  _currentPatients: Patient[],
+  _currentDoctors: DoctorProfile[],
+  _currentNotifications: WorkspaceNotification[],
+  _actor: PatientMutationActor,
+) {
+  void _actor
+  return acceptNextDoctorVisitOnServer()
+}
+
 export async function markDoctorVisitNotHere(
   _currentPatients: Patient[],
   _currentDoctors: DoctorProfile[],
@@ -340,6 +352,16 @@ export async function startLabItem(
   void batchId
   void _actor
   return startLabItemOnServer(itemId)
+}
+
+export async function acceptNextLabItem(
+  _currentPatients: Patient[],
+  _currentDoctors: DoctorProfile[],
+  _currentNotifications: WorkspaceNotification[],
+  _actor: PatientMutationActor,
+) {
+  void _actor
+  return acceptNextLabItemOnServer()
 }
 
 export async function markLabItemNotHere(
@@ -456,17 +478,27 @@ export function getVisibleNotifications(
   role: 'doctor' | 'nurse',
   doctorId?: string | null,
 ) {
-  return notifications.filter((notification) => {
-    if (notification.targetRole !== role) {
-      return false
-    }
+  return notifications
+    .filter((notification) => {
+      if (notification.targetRole !== role) {
+        return false
+      }
 
-    if (role === 'doctor') {
-      return notification.targetDoctorId === doctorId
-    }
+      if (role === 'doctor') {
+        return notification.targetDoctorId === doctorId
+      }
 
-    return true
-  })
+      return true
+    })
+    .sort((left, right) => {
+      const createdAtDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+
+      if (createdAtDelta !== 0) {
+        return createdAtDelta
+      }
+
+      return right.id.localeCompare(left.id)
+    })
 }
 
 export function buildSpecialtyCatalog(doctors: DoctorProfile[]) {

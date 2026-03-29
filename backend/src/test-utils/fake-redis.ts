@@ -6,6 +6,7 @@ type SortedSetMemberI = {
 
 export class InMemoryRedisClient {
   private readonly values = new Map<string, string>();
+  private readonly expirations = new Map<string, number>();
   private readonly sortedSets = new Map<
     string,
     Map<string, SortedSetMemberI>
@@ -23,20 +24,45 @@ export class InMemoryRedisClient {
     return Promise.resolve();
   }
 
+  private purgeExpiredKey(key: string): void {
+    const expiresAt = this.expirations.get(key);
+
+    if (expiresAt !== undefined && expiresAt <= Date.now()) {
+      this.values.delete(key);
+      this.expirations.delete(key);
+    }
+  }
+
+  private purgeExpiredKeys(): void {
+    for (const key of this.expirations.keys()) {
+      this.purgeExpiredKey(key);
+    }
+  }
+
   get(key: string): Promise<string | null> {
+    this.purgeExpiredKey(key);
     return Promise.resolve(this.values.get(key) ?? null);
   }
 
   set(
     key: string,
     value: string,
-    options?: { NX?: boolean },
+    options?: { NX?: boolean; PX?: number },
   ): Promise<'OK' | null> {
+    this.purgeExpiredKey(key);
+
     if (options?.NX && this.values.has(key)) {
       return Promise.resolve(null);
     }
 
     this.values.set(key, value);
+
+    if (typeof options?.PX === 'number') {
+      this.expirations.set(key, Date.now() + options.PX);
+    } else {
+      this.expirations.delete(key);
+    }
+
     return Promise.resolve('OK');
   }
 
@@ -46,6 +72,7 @@ export class InMemoryRedisClient {
 
     for (const key of normalizedKeys) {
       if (this.values.delete(key)) {
+        this.expirations.delete(key);
         removed += 1;
       }
 
@@ -58,18 +85,22 @@ export class InMemoryRedisClient {
   }
 
   mGet(keys: string[]): Promise<Array<string | null>> {
+    keys.forEach((key) => this.purgeExpiredKey(key));
     return Promise.resolve(keys.map((key) => this.values.get(key) ?? null));
   }
 
   mSet(entries: [string, string][]): Promise<'OK'> {
     for (const [key, value] of entries) {
+      this.purgeExpiredKey(key);
       this.values.set(key, value);
+      this.expirations.delete(key);
     }
 
     return Promise.resolve('OK');
   }
 
   keys(pattern: string): Promise<string[]> {
+    this.purgeExpiredKeys();
     const keys = [
       ...new Set([...this.values.keys(), ...this.sortedSets.keys()]),
     ];
